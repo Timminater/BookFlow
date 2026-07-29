@@ -215,7 +215,7 @@ export const BrowserReader = ({
       )}
       <div
         ref={viewportRef}
-        className="h-full w-full pt-12"
+        className="h-full w-full pt-[calc(3rem+env(safe-area-inset-top))]"
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
