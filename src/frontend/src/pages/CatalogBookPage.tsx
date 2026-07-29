@@ -207,18 +207,23 @@ export const CatalogBookPage = ({ canAddToLibrary }: CatalogBookPageProps) => {
   const prepareFileForShare = (file: NonNullable<typeof libraryBook>['files'][number]): void => {
     if (preparedFiles.current.has(file.id) || preparingFiles.current.has(file.id)) return;
     const generation = preparedFileGeneration.current;
+    // A detail page can expose many formats. Keep exactly one large prepared
+    // File; hovering a list must not turn into an unbounded in-memory cache.
+    preparedFiles.current.clear();
+    preparingFiles.current.clear();
     preparingFiles.current.add(file.id);
-    setPreparedFileStates((current) => ({ ...current, [file.id]: 'preparing' }));
+    setPreparedFileStates({ [file.id]: 'preparing' });
     void fetchBookFile(v1Api.libraryFileDownloadUrl(book.id, file.id), book.title, file.file_format)
       .then(
         (preparedFile) => {
           if (generation !== preparedFileGeneration.current) return;
+          preparedFiles.current.clear();
           preparedFiles.current.set(file.id, preparedFile);
-          setPreparedFileStates((current) => ({ ...current, [file.id]: 'ready' }));
+          setPreparedFileStates({ [file.id]: 'ready' });
         },
         () => {
           if (generation !== preparedFileGeneration.current) return;
-          setPreparedFileStates((current) => ({ ...current, [file.id]: 'failed' }));
+          setPreparedFileStates({ [file.id]: 'failed' });
         },
       )
       .finally(() => {
