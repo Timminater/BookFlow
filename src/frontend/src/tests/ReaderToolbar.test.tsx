@@ -19,7 +19,7 @@ const renderToolbar = (overrides: Partial<React.ComponentProps<typeof ReaderTool
   const props: React.ComponentProps<typeof ReaderToolbar> = {
     title: 'Een uitzonderlijk lange Nederlandstalige boektitel voor een kleine telefoon',
     controlsVisible: true,
-    progress: 0.42,
+    position: { value: 'page:36', progression: 0.18, currentPage: 36, totalPages: 200 },
     preferences,
     onBack: vi.fn(),
     onToggleToc: vi.fn(),
@@ -46,6 +46,7 @@ describe('ReaderToolbar', () => {
   it('keeps the primary mobile controls named and all desktop actions available', () => {
     renderToolbar();
 
+    expect(screen.getByLabelText('Reading progress').textContent).toBe('36/200 (18%)');
     expect(screen.getAllByRole('button', { name: 'Close reader' })[0]).toHaveProperty(
       'title',
       'Close reader',
@@ -57,6 +58,34 @@ describe('ReaderToolbar', () => {
       expect(screen.getByRole('button', { name })).toBeTruthy();
     }
     expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('uses the Dutch progress label without changing the numeric presentation', () => {
+    window.localStorage.setItem('bookflow-language', 'nl');
+    renderToolbar();
+
+    expect(screen.getByLabelText('Leesvoortgang').textContent).toBe('36/200 (18%)');
+    expect(screen.getByRole('button', { name: 'Meer readeracties' })).toBeTruthy();
+  });
+
+  it('shows percentage-only progress for a reflowable EPUB', () => {
+    renderToolbar({
+      position: { value: 'epubcfi(/6/4)', progression: 0.18 },
+    });
+
+    expect(screen.getByLabelText('Reading progress').textContent).toBe('18%');
+  });
+
+  it('keeps the compact row bounded without a horizontally scrolling toolbar', () => {
+    renderToolbar();
+
+    const progress = screen.getByLabelText('Reading progress');
+    const row = progress.parentElement;
+    const toolbar = progress.closest('header');
+    expect(row?.className).toContain('min-w-0');
+    expect(row?.querySelector('p')?.className).toContain('min-w-0 flex-1 truncate');
+    expect(progress.className).toContain('shrink-0');
+    expect(toolbar?.className).not.toContain('overflow-x-auto');
   });
 
   it('opens the mobile action menu, focuses it, supports arrow keys, and invokes actions', () => {

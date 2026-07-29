@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { getReaderProgress, readerLocatorForOpen } from '../reader/readerApi';
+import { getReaderProgress, readerLocatorForOpen, saveReaderProgress } from '../reader/readerApi';
 import { loadReaderLocator, saveReaderLocator } from '../reader/readerLocatorStore';
 import { v1Api } from '../services/v1Api';
 import type { V1ReadingProgress } from '../types/v1';
@@ -74,6 +74,28 @@ describe('reader progress restore selection', () => {
       value: '',
       progression: 0.36,
       fileId: 36,
+    });
+  });
+
+  it('keeps exact page presentation data out of the server synchronization contract', async () => {
+    const setProgress = vi.spyOn(v1Api, 'setReadingProgress').mockResolvedValue({
+      progress: serverProgress(36),
+    });
+
+    await saveReaderProgress(7, 36, {
+      value: 'page:36',
+      progression: 0.18,
+      currentPage: 36,
+      totalPages: 200,
+      completed: false,
+      updatedAt: '2026-07-29T08:00:00Z',
+    });
+
+    expect(setProgress).toHaveBeenCalledWith(7, 0.18, false, {
+      fileId: 36,
+      locator: { value: 'page:36', progression: 0.18 },
+      clientUpdatedAt: '2026-07-29T08:00:00Z',
+      completed: false,
     });
   });
 });

@@ -26,6 +26,9 @@ export interface ReaderLocator {
   /** EPUB CFI for reflowable books, page number for fixed-layout books. */
   value: string;
   progression: number;
+  /** Exact fixed-layout page data for presentation; never required for synchronization. */
+  currentPage?: number;
+  totalPages?: number;
 }
 
 export interface ReaderProgress extends ReaderLocator {

@@ -95,6 +95,8 @@ class PdfAdapter implements ReaderAdapter {
     return {
       value: `page:${this.page}`,
       progression: this.document.numPages <= 1 ? 1 : (this.page - 1) / (this.document.numPages - 1),
+      currentPage: this.page,
+      totalPages: this.document.numPages,
     };
   }
 

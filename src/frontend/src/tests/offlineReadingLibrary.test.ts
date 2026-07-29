@@ -1,12 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   MemoryOfflineReadingStore,
   OfflineReadingLibrary,
+  sendPendingProgress,
   syncOfflineProgress,
   type CacheBookInput,
   type ContentFetcher,
 } from '../library/offline';
+import { v1Api } from '../services/v1Api';
 
 const accountId = 'user-42';
 const baseInput = (fileId: number): CacheBookInput => ({
@@ -29,6 +31,10 @@ const timestamps = [
 ];
 
 const timestampAt = (index: number): string => timestamps[index] ?? timestamps.at(-1) ?? '';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('OfflineReadingLibrary', () => {
   it('keeps only the three most recently active incomplete books', async () => {
@@ -99,6 +105,45 @@ describe('OfflineReadingLibrary', () => {
 });
 
 describe('syncOfflineProgress', () => {
+  it('maps a recorded offline locator and progression through the real V1 sender', async () => {
+    const store = new MemoryOfflineReadingStore();
+    const library = new OfflineReadingLibrary(store, fetch, () => timestampAt(0));
+    await library.cacheBook(baseInput(1));
+    await library.recordProgress(accountId, 7, 1, {
+      locator: 'page:36',
+      progression: 0.18,
+      completed: false,
+    });
+    const setProgress = vi.spyOn(v1Api, 'setReadingProgress').mockResolvedValue({
+      progress: {
+        book_id: 7,
+        progress: 18,
+        progression: 0.18,
+        active: 1,
+        completed: false,
+        file_id: 1,
+        locator: { value: 'page:36', progression: 0.18 },
+        reader_updated_at: timestamps[0],
+        source: 'web',
+        revision: 1,
+        updated_at: timestamps[0],
+      },
+    });
+
+    await expect(syncOfflineProgress(store, accountId, sendPendingProgress)).resolves.toEqual({
+      sent: 1,
+      discardedAsStale: 0,
+      failed: 0,
+    });
+    expect(setProgress).toHaveBeenCalledWith(7, 0.18, false, {
+      fileId: 1,
+      locator: { value: 'page:36', progression: 0.18 },
+      clientUpdatedAt: timestamps[0],
+      completed: false,
+    });
+    expect(await store.getPendingProgress(accountId, 1)).toBeNull();
+  });
+
   it('keeps a newer server position and discards the stale local queue entry', async () => {
     const store = new MemoryOfflineReadingStore();
     await store.putPendingProgress({

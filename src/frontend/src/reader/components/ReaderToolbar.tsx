@@ -2,12 +2,13 @@ import { useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'reac
 
 import { useLanguage } from '../../contexts/LanguageContext';
 import { useDismiss } from '../../hooks/useDismiss';
-import type { ReaderPreferences } from '../types';
+import { formatReaderProgress } from '../readerProgress';
+import type { ReaderLocator, ReaderPreferences } from '../types';
 
 interface ReaderToolbarProps {
   title: string;
   controlsVisible: boolean;
-  progress: number;
+  position: ReaderLocator;
   preferences: ReaderPreferences;
   onBack: () => void;
   onToggleToc: () => void;
@@ -67,7 +68,7 @@ const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
 export const ReaderToolbar = ({
   title,
   controlsVisible,
-  progress,
+  position,
   preferences,
   onBack,
   onToggleToc,
@@ -134,7 +135,9 @@ export const ReaderToolbar = ({
           <p className="min-w-0 flex-1 truncate text-sm font-medium" title={title}>
             {title}
           </p>
-          <span className="shrink-0 text-xs opacity-65">{Math.round(progress * 100)}%</span>
+          <span className="shrink-0 text-xs opacity-65" aria-label={t('webReader.readingProgress')}>
+            {formatReaderProgress(position)}
+          </span>
           <div className="hidden items-center gap-2 sm:flex">
             <button
               type="button"

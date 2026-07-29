@@ -51,7 +51,7 @@ export const BrowserReader = ({
   const preferencesRef = useRef<ReaderPreferences>(loadReaderPreferences());
   const pointerRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const [preferences, setPreferences] = useState<ReaderPreferences>(loadReaderPreferences);
-  const [progress, setProgress] = useState(0);
+  const [position, setPosition] = useState<ReaderLocator>({ value: '', progression: 0 });
   const [toc, setToc] = useState<ReaderTocItem[]>([]);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [tocOpen, setTocOpen] = useState(false);
@@ -66,7 +66,7 @@ export const BrowserReader = ({
         ...locator,
         progression: Math.max(0, Math.min(1, locator.progression)),
       };
-      setProgress(normalized.progression);
+      setPosition(normalized);
       onProgressChange(normalized);
     },
     [onProgressChange],
@@ -181,7 +181,7 @@ export const BrowserReader = ({
       <ReaderToolbar
         title={file.title}
         controlsVisible={controlsVisible}
-        progress={progress}
+        position={position}
         preferences={preferences}
         onBack={onBack}
         onToggleToc={() => {
