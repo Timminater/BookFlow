@@ -26,7 +26,7 @@ const Skeletons = ({ variant }: { variant: 'poster' | 'wide' }) => (
         key={index}
         className={`shrink-0 animate-pulse rounded-xl border border-(--border-muted) bg-(--bg-soft) ${
           variant === 'wide'
-            ? 'h-32 w-[19rem] sm:h-36 sm:w-[23rem]'
+            ? 'min-h-36 w-full max-w-[19rem] sm:max-w-[23rem]'
             : 'aspect-[2/3] w-28 sm:w-[7.5rem]'
         }`}
       />
