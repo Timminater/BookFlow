@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type ReactNode } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useLanguage } from '../contexts/LanguageContext';
 import { useDependencyEffect } from '../hooks/useMountEffect';
@@ -7,7 +7,7 @@ import type { TranslationKey } from '../i18n/translations';
 import { downloadBookFile, fetchBookFile, shareBookFile } from '../reader/fileActions';
 import { canReadInBrowser } from '../reader/formatCapabilities';
 import { addLibraryBook, removeLibraryBook } from '../services/api';
-import { v1Api } from '../services/v1Api';
+import { v1Api, type V1CatalogDeletionPlan } from '../services/v1Api';
 import type { V1BookDetail, V1CatalogBookDetail, V1ReleaseProfile, V1Request } from '../types/v1';
 import { withBasePath } from '../utils/basePath';
 import { createIdempotencyKey } from '../utils/idempotencyKey';
@@ -21,6 +21,7 @@ import {
 
 interface CatalogBookPageProps {
   canAddToLibrary: boolean;
+  isAdmin: boolean;
 }
 
 const REQUEST_LABELS: Record<V1Request['status'], TranslationKey> = {
@@ -70,9 +71,10 @@ const formatRequestError = (caught: unknown, fallback: string): string => {
   return caught instanceof Error ? caught.message : fallback;
 };
 
-export const CatalogBookPage = ({ canAddToLibrary }: CatalogBookPageProps) => {
+export const CatalogBookPage = ({ canAddToLibrary, isAdmin }: CatalogBookPageProps) => {
   const { language, t } = useLanguage();
   const { bookId: rawBookId, isbn: rawIsbn } = useParams();
+  const navigate = useNavigate();
   const [detail, setDetail] = useState<V1CatalogBookDetail | null>(null);
   const [libraryBook, setLibraryBook] = useState<V1BookDetail | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -86,6 +88,14 @@ export const CatalogBookPage = ({ canAddToLibrary }: CatalogBookPageProps) => {
   const [addLibraryToKobo, setAddLibraryToKobo] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [confirmRemoval, setConfirmRemoval] = useState(false);
+  const [confirmCatalogDeletion, setConfirmCatalogDeletion] = useState(false);
+  const [catalogDeletionBusy, setCatalogDeletionBusy] = useState(false);
+  const [catalogDeletionToken, setCatalogDeletionToken] = useState<string | null>(null);
+  const [catalogDeletionPlan, setCatalogDeletionPlan] = useState<V1CatalogDeletionPlan | null>(
+    null,
+  );
+  const [catalogDeletionConfirmation, setCatalogDeletionConfirmation] = useState('');
+  const [catalogCleanupOperationId, setCatalogCleanupOperationId] = useState<string | null>(null);
   const [requestDialogOpen, setRequestDialogOpen] = useState(false);
   const [profiles, setProfiles] = useState<V1ReleaseProfile[]>([]);
   const [profileId, setProfileId] = useState<number | null>(null);
@@ -317,6 +327,128 @@ export const CatalogBookPage = ({ canAddToLibrary }: CatalogBookPageProps) => {
               {t('catalogDetail.removeFromLibrary')}
             </button>
           ))}
+        {isAdmin &&
+          (confirmCatalogDeletion ? (
+            <span className="flex items-center gap-2 rounded-lg border border-red-300/45 bg-red-950/30 px-3 py-1.5 text-sm text-red-100">
+              <span>
+                Verwijder “{book.title}” en alle {libraryBook?.files.length ?? 0} catalogusbestanden
+                voor alle gebruikers?
+              </span>
+              {catalogDeletionPlan && (
+                <small>
+                  #{catalogDeletionPlan.canonical_book_id}; {catalogDeletionPlan.files.length}{' '}
+                  files; IDs: {catalogDeletionPlan.equivalent_book_ids.join(', ')}; memberships{' '}
+                  {catalogDeletionPlan.counts.memberships}, entitlements{' '}
+                  {catalogDeletionPlan.counts.entitlements}, progress{' '}
+                  {catalogDeletionPlan.counts.reading_progress}, requests{' '}
+                  {catalogDeletionPlan.counts.requests}.
+                </small>
+              )}
+              <input
+                value={catalogDeletionConfirmation}
+                onChange={(event) => setCatalogDeletionConfirmation(event.target.value)}
+                placeholder={t('catalogDetail.deleteCatalogTyped')}
+                className="rounded border border-red-300/45 bg-transparent px-2 py-1 text-sm"
+              />
+              <button
+                type="button"
+                disabled={
+                  catalogDeletionBusy ||
+                  catalogDeletionConfirmation !== (catalogDeletionPlan?.book.title ?? book.title) ||
+                  !catalogDeletionToken ||
+                  !catalogDeletionPlan ||
+                  catalogDeletionPlan.counts.active_processes +
+                    catalogDeletionPlan.counts.active_downloads >
+                    0
+                }
+                className="font-semibold underline disabled:opacity-50"
+                onClick={() => {
+                  setCatalogDeletionBusy(true);
+                  void v1Api
+                    .deleteCatalogBook(
+                      catalogDeletionPlan?.canonical_book_id ?? book.id,
+                      catalogDeletionToken ?? '',
+                    )
+                    .then((result) => {
+                      if (result.cleanup.pending > 0 && result.operation_id) {
+                        setCatalogCleanupOperationId(result.operation_id);
+                        setMessage(t('catalogDetail.cleanupPending'));
+                      } else {
+                        void navigate('/catalog');
+                      }
+                      setConfirmCatalogDeletion(false);
+                    })
+                    .catch((caught: unknown) =>
+                      setMessage(caught instanceof Error ? caught.message : t('common.loadFailed')),
+                    )
+                    .finally(() => setCatalogDeletionBusy(false));
+                }}
+              >
+                {catalogDeletionBusy
+                  ? t('catalogDetail.removing')
+                  : t('catalogDetail.deleteCatalogConfirm')}
+              </button>
+              <button
+                type="button"
+                disabled={catalogDeletionBusy}
+                className="underline"
+                onClick={() => setConfirmCatalogDeletion(false)}
+              >
+                {t('common.cancel')}
+              </button>
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="rounded-lg border border-red-300/45 px-4 py-2.5 text-sm font-semibold text-red-200"
+              onClick={() => {
+                setCatalogDeletionBusy(true);
+                void v1Api
+                  .catalogDeletionPlan(book.id)
+                  .then((result) => {
+                    setCatalogDeletionToken(result.plan_token);
+                    setCatalogDeletionPlan(result.plan);
+                    setCatalogDeletionConfirmation('');
+                    setConfirmCatalogDeletion(true);
+                  })
+                  .catch((caught: unknown) =>
+                    setMessage(caught instanceof Error ? caught.message : t('common.loadFailed')),
+                  )
+                  .finally(() => setCatalogDeletionBusy(false));
+              }}
+            >
+              {t('catalogDetail.deleteCatalog')}
+            </button>
+          ))}
+        {isAdmin && catalogCleanupOperationId && (
+          <span className="flex items-center gap-2 rounded-lg border border-amber-300/45 bg-amber-950/30 px-3 py-1.5 text-sm text-amber-100">
+            <span>{t('catalogDetail.cleanupPending')}</span>
+            <button
+              type="button"
+              disabled={catalogDeletionBusy}
+              className="font-semibold underline disabled:opacity-50"
+              onClick={() => {
+                setCatalogDeletionBusy(true);
+                void v1Api
+                  .retryCatalogDeletionCleanup(catalogCleanupOperationId)
+                  .then((result) => {
+                    if (result.pending === 0) {
+                      setCatalogCleanupOperationId(null);
+                      void navigate('/catalog');
+                    } else {
+                      setMessage(t('catalogDetail.cleanupPending'));
+                    }
+                  })
+                  .catch((caught: unknown) =>
+                    setMessage(caught instanceof Error ? caught.message : t('common.loadFailed')),
+                  )
+                  .finally(() => setCatalogDeletionBusy(false));
+              }}
+            >
+              {t('catalogDetail.retryCleanup')}
+            </button>
+          </span>
+        )}
       </>
     );
   } else if (primaryAction === 'add-library') {

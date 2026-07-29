@@ -1026,6 +1026,88 @@ WHERE file_id IS NOT NULL;
 """
 _MIGRATION_026_CHECKSUM = hashlib.sha256(_MIGRATION_026_DEFINITION.encode()).hexdigest()
 
+_MIGRATION_027_DEFINITION = """
+CREATE TABLE catalog_deletion_operations (
+    id TEXT PRIMARY KEY,
+    book_id INTEGER NOT NULL,
+    plan_token TEXT NOT NULL UNIQUE,
+    actor_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    state TEXT NOT NULL CHECK(state IN ('deleting','deleted','cleanup_pending','cleanup_complete','failed')),
+    plan_json TEXT NOT NULL CHECK(json_valid(plan_json)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT
+);
+CREATE TABLE catalog_deletion_cleanup (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_id TEXT NOT NULL REFERENCES catalog_deletion_operations(id) ON DELETE CASCADE,
+    storage_path TEXT NOT NULL,
+    expected_sha256 TEXT NOT NULL,
+    expected_size_bytes INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('pending','complete','failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(operation_id, storage_path)
+);
+CREATE TABLE catalog_deletion_audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_id TEXT NOT NULL REFERENCES catalog_deletion_operations(id) ON DELETE RESTRICT,
+    actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TRIGGER prevent_catalog_deletion_audit_update BEFORE UPDATE ON catalog_deletion_audit_events BEGIN SELECT RAISE(ABORT, 'catalog deletion audit is append-only'); END;
+CREATE TRIGGER prevent_catalog_deletion_audit_delete BEFORE DELETE ON catalog_deletion_audit_events BEGIN SELECT RAISE(ABORT, 'catalog deletion audit is append-only'); END;
+"""
+_MIGRATION_027_CHECKSUM = hashlib.sha256(_MIGRATION_027_DEFINITION.encode()).hexdigest()
+
+_MIGRATION_028_DEFINITION = """
+CREATE TABLE catalog_storage_leases (
+    lease_key TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+"""
+_MIGRATION_028_CHECKSUM = hashlib.sha256(_MIGRATION_028_DEFINITION.encode()).hexdigest()
+
+# SQLite cannot alter a foreign-key action in place.  Rebuild the parent table
+# under deferred FK enforcement so historical operations remain addressable
+# after their administrator account is removed.
+_MIGRATION_029_DEFINITION = """
+CREATE TABLE catalog_deletion_operations_rebuilt (
+    id TEXT PRIMARY KEY,
+    book_id INTEGER NOT NULL,
+    plan_token TEXT NOT NULL UNIQUE,
+    actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    state TEXT NOT NULL CHECK(state IN ('deleting','deleted','cleanup_pending','cleanup_complete','failed')),
+    plan_json TEXT NOT NULL CHECK(json_valid(plan_json)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT
+);
+INSERT INTO catalog_deletion_operations_rebuilt
+SELECT id, book_id, plan_token, actor_user_id, state, plan_json, created_at, completed_at
+FROM catalog_deletion_operations;
+DROP TABLE catalog_deletion_operations;
+ALTER TABLE catalog_deletion_operations_rebuilt RENAME TO catalog_deletion_operations;
+DROP TRIGGER prevent_catalog_deletion_audit_update;
+CREATE TRIGGER prevent_catalog_deletion_audit_update
+BEFORE UPDATE ON catalog_deletion_audit_events
+WHEN NOT (
+    OLD.actor_user_id IS NOT NULL
+    AND NEW.actor_user_id IS NULL
+    AND NEW.id = OLD.id
+    AND NEW.operation_id = OLD.operation_id
+    AND NEW.event_type = OLD.event_type
+    AND NEW.payload_json = OLD.payload_json
+    AND NEW.created_at = OLD.created_at
+)
+BEGIN
+    SELECT RAISE(ABORT, 'catalog deletion audit is append-only');
+END;
+"""
+_MIGRATION_029_CHECKSUM = hashlib.sha256(_MIGRATION_029_DEFINITION.encode()).hexdigest()
+
 
 def _require_loaded_user(user: dict[str, Any] | None) -> dict[str, Any]:
     """Return a loaded user row or raise when the DB insert result is inconsistent."""
@@ -1306,6 +1388,24 @@ class UserDB:
                             checksum=_MIGRATION_026_CHECKSUM,
                             apply=self._apply_migration_026,
                         ),
+                        Migration(
+                            version=27,
+                            name="durable-catalog-deletion",
+                            checksum=_MIGRATION_027_CHECKSUM,
+                            apply=self._apply_migration_027,
+                        ),
+                        Migration(
+                            version=28,
+                            name="catalog-storage-leases",
+                            checksum=_MIGRATION_028_CHECKSUM,
+                            apply=self._apply_migration_028,
+                        ),
+                        Migration(
+                            version=29,
+                            name="catalog-deletion-actor-retention",
+                            checksum=_MIGRATION_029_CHECKSUM,
+                            apply=self._apply_migration_029,
+                        ),
                     ),
                 )
                 migrator.migrate()
@@ -1562,6 +1662,18 @@ class UserDB:
     def _apply_migration_026(conn: sqlite3.Connection) -> None:
         """Attach web-reader locations to the existing book progress rows."""
         _execute_sql_script(conn, _MIGRATION_026_DEFINITION)
+
+    @staticmethod
+    def _apply_migration_027(conn: sqlite3.Connection) -> None:
+        _execute_sql_script(conn, _MIGRATION_027_DEFINITION)
+
+    @staticmethod
+    def _apply_migration_028(conn: sqlite3.Connection) -> None:
+        _execute_sql_script(conn, _MIGRATION_028_DEFINITION)
+
+    @staticmethod
+    def _apply_migration_029(conn: sqlite3.Connection) -> None:
+        _execute_sql_script(conn, _MIGRATION_029_DEFINITION)
 
     @staticmethod
     def _backfill_catalog_phase_one(conn: sqlite3.Connection) -> None:

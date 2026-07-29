@@ -242,8 +242,14 @@ function App() {
             <Route path="/catalog" element={<CatalogPage />} />
             <Route path="/catalog/authors" element={<CatalogEntitiesPage kind="authors" />} />
             <Route path="/catalog/series" element={<CatalogEntitiesPage kind="series" />} />
-            <Route path="/catalog/:bookId" element={<CatalogBookPage canAddToLibrary />} />
-            <Route path="/catalog/isbn/:isbn" element={<CatalogBookPage canAddToLibrary />} />
+            <Route
+              path="/catalog/:bookId"
+              element={<CatalogBookPage canAddToLibrary isAdmin={isAdmin} />}
+            />
+            <Route
+              path="/catalog/isbn/:isbn"
+              element={<CatalogBookPage canAddToLibrary isAdmin={isAdmin} />}
+            />
             <Route path="/suggestions" element={<Navigate to="/suggestions/overall" replace />} />
             <Route path="/suggestions/:listKey" element={<SuggestionsPage />} />
             <Route

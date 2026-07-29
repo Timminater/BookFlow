@@ -311,6 +311,15 @@ try:
         resolve_actor=resolve_v1_actor,
         resolve_file_path=_resolve_library_file_for_serving,
     )
+    # Catalog bytes are intentionally removed only after the database commit.
+    # Resume any durable cleanup outbox entries at startup; individual failures
+    # stay pending and are exposed through the admin status endpoint.
+    try:
+        from bookflow.core.catalog_deletion_service import CatalogDeletionService
+
+        CatalogDeletionService(_user_db_path, _resolve_library_file_for_serving).recover_pending()
+    except OSError, RuntimeError, ValueError, sqlite3.Error:
+        logger.exception("Catalog deletion cleanup recovery failed; pending entries were retained")
     github_issue_token = os.environ.get("GITHUB_ISSUE_TOKEN", "").strip()
     github_issue_repository = os.environ.get(
         "GITHUB_ISSUE_REPOSITORY", "Timminater/BookFlow"

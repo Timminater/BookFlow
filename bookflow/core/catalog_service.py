@@ -17,17 +17,27 @@ from bookflow.core.book_matcher import (
     BookMatchInput,
     normalize_isbn,
 )
+from bookflow.core.catalog_storage_lease import (
+    CatalogStorageLease,
+    catalog_book_lease_key,
+    catalog_path_lease_key,
+)
 
 _RETIRED_AUDIO_FILE_FORMATS = frozenset(
     {"aac", "flac", "m4a", "m4b", "mp3", "ogg", "opus", "wav", "wma"}
 )
 
 if TYPE_CHECKING:
-    from bookflow.core.file_store import PublishedFile
+    from bookflow.core.file_store import FileStore, PublishedFile
+    from bookflow.core.path_security import PathInput
 
 
 class CatalogServiceError(RuntimeError):
     """Raised when a catalog invariant cannot be maintained."""
+
+
+def _raise_book_deleting() -> None:
+    raise CatalogServiceError("Book is being deleted")
 
 
 @dataclass(frozen=True)
@@ -312,6 +322,13 @@ class CatalogService:
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                deleting = conn.execute(
+                    """SELECT 1 FROM catalog_deletion_operations
+                       WHERE book_id = ? AND state IN ('deleting', 'cleanup_pending')""",
+                    (book_id,),
+                ).fetchone()
+                if deleting is not None:
+                    raise CatalogServiceError("Book is being deleted")
                 book = conn.execute("SELECT 1 FROM books WHERE id = ?", (book_id,)).fetchone()
                 if book is None:
                     raise ValueError("Book not found")
@@ -384,6 +401,79 @@ class CatalogService:
                 raise CatalogServiceError("File-record transaction failed") from exc
             finally:
                 conn.close()
+
+    def publish_and_register_imported_file(
+        self,
+        *,
+        book_id: int,
+        file_store: FileStore,
+        source_path: PathInput,
+        source_roots: tuple[PathInput, ...],
+        release_source: str | None = None,
+        content_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Publish and register one import under the deletion-compatible leases.
+
+        This is deliberately the sole orchestration boundary for callers that
+        turn a downloaded path into a catalog file.  Holding both the canonical
+        book key and the content-addressed object key closes the window between
+        publication, registration and deletion cleanup.
+        """
+        owner = uuid.uuid4().hex
+        book_lease = CatalogStorageLease(
+            self._db_path, catalog_book_lease_key(self._db_path, book_id), owner
+        )
+        object_lease: CatalogStorageLease | None = None
+        object_lease_acquired = False
+        published: PublishedFile | None = None
+        try:
+            book_lease.acquire()
+            with self._connect() as conn:
+                tombstone = conn.execute(
+                    "SELECT 1 FROM catalog_deletion_operations WHERE book_id=?", (book_id,)
+                ).fetchone()
+            if tombstone is not None:
+                _raise_book_deleting()
+            published = file_store.publish(source_path, source_roots=source_roots)
+            object_lease = CatalogStorageLease(
+                self._db_path,
+                catalog_path_lease_key(str(published.path), published.sha256),
+                owner,
+            )
+            object_lease.acquire()
+            object_lease_acquired = True
+            # The book lease is still owned, but repeat the durable tombstone
+            # check after publication so future alternate callers cannot turn a
+            # stale plan into a resurrected catalog record.
+            with self._connect() as conn:
+                tombstone = conn.execute(
+                    "SELECT 1 FROM catalog_deletion_operations WHERE book_id=?", (book_id,)
+                ).fetchone()
+            if tombstone is not None:
+                _raise_book_deleting()
+            return self.register_imported_file(
+                book_id=book_id,
+                published_file=published,
+                release_source=release_source,
+                content_type=content_type,
+            )
+        except Exception:
+            # Only remove an orphan while the same object key is fenced; a
+            # publisher/cleanup racing this path can therefore never lose bytes
+            # it has already registered.
+            if published is not None and object_lease_acquired:
+                with self._connect() as conn:
+                    referenced = conn.execute(
+                        "SELECT 1 FROM book_files WHERE storage_path=? OR sha256=?",
+                        (str(published.path), published.sha256),
+                    ).fetchone()
+                if referenced is None:
+                    published.path.unlink(missing_ok=True)
+            raise
+        finally:
+            if object_lease is not None:
+                object_lease.release()
+            book_lease.release()
 
     def register_kepub_conversion(
         self,

@@ -22,6 +22,9 @@ from typing import Any
 from bookflow.core.attempt_policy import DEFAULT_RETRY_DELAYS, FailureCode, FailureDisposition
 from bookflow.core.attempt_service import AttemptService, DownloadAdapter
 from bookflow.core.catalog_service import CatalogService
+from bookflow.core.catalog_storage_lease import (
+    CatalogStorageLeaseError,
+)
 from bookflow.core.durable_jobs import DurableJobService
 from bookflow.core.file_store import FileStore
 from bookflow.core.release_candidates import ReleaseCandidate, ReleaseProfile
@@ -414,21 +417,34 @@ class RequestRuntime:
             paths = [task.download_path]
         if not paths:
             raise ValueError("completed download did not provide an imported file path")
-        source_path = Path(paths[0])
-        published = self._files.publish(source_path, source_roots=(self._files.storage_root,))
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT book_id, content_type FROM request_processes WHERE id = ?",
                 (request_process_id,),
             ).fetchone()
+            if row is not None:
+                deleting = conn.execute(
+                    """SELECT 1 FROM catalog_deletion_operations
+                       WHERE book_id = ? AND state IN ('deleting', 'cleanup_pending')""",
+                    (row["book_id"],),
+                ).fetchone()
+                if deleting is not None:
+                    raise ValueError("Book is being deleted")
         if row is None:
             raise ValueError("Request not found")
-        record = self._catalog.register_imported_file(
-            book_id=int(row["book_id"]),
-            published_file=published,
-            release_source=str(getattr(task, "source", "")),
-            content_type=str(row["content_type"]),
-        )
+        book_id = int(row["book_id"])
+        try:
+            source_path = Path(paths[0])
+            record = self._catalog.publish_and_register_imported_file(
+                book_id=book_id,
+                file_store=self._files,
+                source_path=source_path,
+                source_roots=(self._files.storage_root,),
+                release_source=str(getattr(task, "source", "")),
+                content_type=str(row["content_type"]),
+            )
+        except CatalogStorageLeaseError as exc:
+            raise ValueError("Catalog storage is busy") from exc
         return int(record["id"])
 
     def _apply_kobo_intent(self, request_process_id: int, file_id: int) -> None:

@@ -37,6 +37,35 @@ import type {
 } from '../types/v1';
 import { getApiBase } from '../utils/basePath';
 
+export interface V1CatalogDeletionPlan {
+  canonical_book_id: number;
+  equivalent_book_ids: number[];
+  book: { id: number; title: string; author: string | null };
+  files: Array<{
+    id: number;
+    file_format: string;
+    storage_path: string;
+    derived_from_file_id: number | null;
+  }>;
+  counts: Record<
+    | 'memberships'
+    | 'entitlements'
+    | 'reading_progress'
+    | 'requests'
+    | 'active_processes'
+    | 'active_downloads',
+    number
+  >;
+}
+
+export interface V1CatalogDeletionOperation {
+  id: string;
+  state: string;
+  pending: number;
+  plan: V1CatalogDeletionPlan;
+  cleanup: Array<{ storage_path: string; state: string; attempts: number; error: string | null }>;
+}
+
 const V1_BASE = `${getApiBase()}/v1`;
 const MUTATION_TIMEOUT_MS = 15_000;
 
@@ -173,6 +202,31 @@ export const v1Api = {
     requestV1(`/catalog/books/${bookId}`),
   catalogBookByIsbn: (isbn: string): Promise<V1CatalogBookDetail> =>
     requestV1(`/catalog/books/isbn/${encodeURIComponent(isbn)}`),
+  catalogDeletionPlan: (
+    bookId: number,
+  ): Promise<{ plan: V1CatalogDeletionPlan; plan_token: string }> =>
+    requestV1(`/admin/catalog/books/${bookId}`),
+  deleteCatalogBook: (
+    bookId: number,
+    planToken: string,
+  ): Promise<{
+    status: string;
+    operation_id?: string;
+    cleanup: { failed: unknown[]; pending: number };
+  }> =>
+    requestV1(`/admin/catalog/books/${bookId}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan_token: planToken }),
+    }),
+  retryCatalogDeletionCleanup: (
+    operationId: string,
+  ): Promise<{ pending: number; failed: unknown[] }> =>
+    requestV1(`/admin/catalog/deletions/${encodeURIComponent(operationId)}/retry-cleanup`, {
+      method: 'POST',
+    }),
+  catalogDeletionStatus: (operationId: string): Promise<V1CatalogDeletionOperation> =>
+    requestV1(`/admin/catalog/deletions/${encodeURIComponent(operationId)}`),
   bulkAddLibraryBooks: (bookIds: number[]): Promise<V1BulkLibraryResponse> =>
     requestV1('/library/books/bulk', {
       method: 'POST',

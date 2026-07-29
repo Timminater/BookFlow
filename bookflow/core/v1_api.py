@@ -21,6 +21,12 @@ from flask import Blueprint, Flask, Response, g, jsonify, request, send_file
 from bookflow.core.bestseller_service import BestsellerSuggestionService
 from bookflow.core.book_groups import canonical_book_id, equivalent_book_ids
 from bookflow.core.book_matcher import normalize_isbn
+from bookflow.core.catalog_deletion_service import (
+    CatalogDeletionConflictError,
+    CatalogDeletionError,
+    CatalogDeletionNotFoundError,
+    CatalogDeletionService,
+)
 from bookflow.core.catalog_monitor_service import CatalogMonitorError, CatalogMonitorService
 from bookflow.core.durable_jobs import DurableJobService
 from bookflow.core.library_service import LibraryService
@@ -73,6 +79,7 @@ def register_v1_api(
     job_service = DurableJobService(db_path)
     catalog_service = CatalogMonitorService(db_path)
     library_service = LibraryService(db_path)
+    catalog_deletion_service = CatalogDeletionService(db_path, resolve_file_path)
     suggestion_service = BestsellerSuggestionService(db_path)
     blueprint = Blueprint("v1", __name__, url_prefix="/api/v1")
 
@@ -457,6 +464,10 @@ def register_v1_api(
                 },
                 "/api/v1/metadata-reports": {"get": {"summary": "List own metadata reports"}},
                 "/api/v1/admin/metadata-reports": {"get": {"summary": "Review metadata reports"}},
+                "/api/v1/admin/catalog/books/{bookId}": {
+                    "get": {"summary": "Inspect catalog deletion"},
+                    "delete": {"summary": "Delete a shared catalog book"},
+                },
                 "/api/v1/admin/metadata-reports/{reportId}/reject": {
                     "post": {"summary": "Reject a metadata report"}
                 },
@@ -556,6 +567,60 @@ def register_v1_api(
     @require_actor()
     def release_profiles() -> Response:
         return jsonify({"items": profile_service.list(active_only=True)})
+
+    @blueprint.get("/admin/catalog/books/<int:book_id>")
+    @require_actor(admin=True)
+    def admin_catalog_delete_plan(book_id: int) -> Response | tuple[Response, int]:
+        plan = catalog_deletion_service.plan(book_id)
+        if plan is None:
+            return error("not_found", "Catalog book not found", 404)
+        return jsonify({"plan": plan.serialize(), "plan_token": plan.token()})
+
+    @blueprint.delete("/admin/catalog/books/<int:book_id>")
+    @require_actor(admin=True)
+    def admin_delete_catalog_book(book_id: int) -> Response | tuple[Response, int]:
+        payload = request.get_json(silent=True) or {}
+        plan_token = payload.get("plan_token")
+        if not isinstance(plan_token, str) or len(plan_token) != 64:
+            return error("invalid_plan", "A deletion plan token is required", 400)
+        try:
+            result = catalog_deletion_service.delete(
+                book_id, actor_user_id=g.v1_actor.user_id, plan_token=plan_token
+            )
+        except CatalogDeletionConflictError as exc:
+            return error("catalog_delete_blocked", str(exc), 409)
+        except CatalogDeletionError:
+            return error("catalog_delete_failed", "Catalog deletion failed", 500)
+        return jsonify(result)
+
+    @blueprint.post("/admin/catalog/deletions/<operation_id>/retry-cleanup")
+    @require_actor(admin=True)
+    def admin_retry_catalog_cleanup(operation_id: str) -> Response | tuple[Response, int]:
+        try:
+            return jsonify(catalog_deletion_service.retry_cleanup(operation_id))
+        except ValueError as exc:
+            return error("invalid_operation", str(exc), 400)
+        except CatalogDeletionNotFoundError as exc:
+            return error("not_found", str(exc), 404)
+        except CatalogDeletionConflictError as exc:
+            return error("cleanup_not_retryable", str(exc), 409)
+        except CatalogDeletionError:
+            return error("cleanup_failed", "Catalog cleanup failed", 500)
+
+    @blueprint.get("/admin/catalog/deletions")
+    @require_actor(admin=True)
+    def admin_pending_catalog_deletions() -> Response:
+        return jsonify({"items": catalog_deletion_service.pending_operations()})
+
+    @blueprint.get("/admin/catalog/deletions/<operation_id>")
+    @require_actor(admin=True)
+    def admin_catalog_deletion_status(operation_id: str) -> Response | tuple[Response, int]:
+        try:
+            return jsonify(catalog_deletion_service.operation(operation_id))
+        except ValueError as exc:
+            return error("invalid_operation", str(exc), 400)
+        except CatalogDeletionNotFoundError as exc:
+            return error("not_found", str(exc), 404)
 
     @blueprint.get("/admin/release-profiles")
     @require_actor(admin=True)
