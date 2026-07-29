@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { useLanguage } from '../contexts/LanguageContext';
@@ -93,6 +93,11 @@ export const CatalogBookPage = ({ canAddToLibrary }: CatalogBookPageProps) => {
   const [reportField, setReportField] = useState('title');
   const [reportNote, setReportNote] = useState('');
   const [fileAction, setFileAction] = useState<string | null>(null);
+  const [preparedFileStates, setPreparedFileStates] = useState<
+    Record<number, 'preparing' | 'ready' | 'failed'>
+  >({});
+  const preparedFiles = useRef(new Map<number, File>());
+  const preparingFiles = useRef(new Set<number>());
 
   const load = useCallback(async () => {
     setDetail(null);
@@ -120,6 +125,15 @@ export const CatalogBookPage = ({ canAddToLibrary }: CatalogBookPageProps) => {
   useDependencyEffect(() => {
     void load();
   }, [load]);
+
+  // Detail routes may be reused by the router. Prepared Files can be large,
+  // so never retain them after navigating away from the book that requested
+  // them.
+  useDependencyEffect(() => {
+    preparedFiles.current.clear();
+    preparingFiles.current.clear();
+    setPreparedFileStates({});
+  }, [detail?.book.id]);
 
   if (!detail) {
     return <p className="py-10 text-sm opacity-65">{message ?? t('common.loading')}</p>;
@@ -188,19 +202,50 @@ export const CatalogBookPage = ({ canAddToLibrary }: CatalogBookPageProps) => {
   let openLabel = t('catalogDetail.openPersonal');
   if (readableFile) openLabel = t('catalogDetail.readNow');
   if (progress !== null) openLabel = t('catalogDetail.continueReading');
+  const prepareFileForShare = (file: NonNullable<typeof libraryBook>['files'][number]): void => {
+    if (preparedFiles.current.has(file.id) || preparingFiles.current.has(file.id)) return;
+    preparingFiles.current.add(file.id);
+    setPreparedFileStates((current) => ({ ...current, [file.id]: 'preparing' }));
+    void fetchBookFile(v1Api.libraryFileDownloadUrl(book.id, file.id), book.title, file.file_format)
+      .then(
+        (preparedFile) => {
+          preparedFiles.current.set(file.id, preparedFile);
+          setPreparedFileStates((current) => ({ ...current, [file.id]: 'ready' }));
+        },
+        () => setPreparedFileStates((current) => ({ ...current, [file.id]: 'failed' })),
+      )
+      .finally(() => preparingFiles.current.delete(file.id));
+  };
   const runFileAction = (
     action: 'download' | 'share',
     file: NonNullable<typeof libraryBook>['files'][number],
   ) => {
+    if (action === 'share') {
+      const preparedFile = preparedFiles.current.get(file.id);
+      if (!preparedFile) {
+        prepareFileForShare(file);
+        setMessage(
+          preparedFileStates[file.id] === 'failed'
+            ? 'Het bestand kon niet worden voorbereid. Gebruik Download om het opnieuw te proberen.'
+            : 'Bestand wordt voorbereid. Probeer Open in andere app opnieuw zodra het klaar is, of gebruik Download.',
+        );
+        return;
+      }
+      setFileAction(`share-${file.id}`);
+      setMessage(null);
+      void shareBookFile(preparedFile, book.title)
+        .catch((caught: unknown) => {
+          if (caught instanceof DOMException && caught.name === 'AbortError') return;
+          setMessage(caught instanceof Error ? caught.message : t('common.loadFailed'));
+        })
+        .finally(() => setFileAction(null));
+      return;
+    }
     const actionKey = `${action}-${file.id}`;
     setFileAction(actionKey);
     setMessage(null);
     void fetchBookFile(v1Api.libraryFileDownloadUrl(book.id, file.id), book.title, file.file_format)
-      .then((bookFile) =>
-        action === 'share'
-          ? shareBookFile(bookFile, book.title)
-          : Promise.resolve(downloadBookFile(bookFile)),
-      )
+      .then((bookFile) => downloadBookFile(bookFile))
       .catch((caught: unknown) => {
         if (caught instanceof DOMException && caught.name === 'AbortError') return;
         setMessage(caught instanceof Error ? caught.message : t('common.loadFailed'));
@@ -617,6 +662,13 @@ export const CatalogBookPage = ({ canAddToLibrary }: CatalogBookPageProps) => {
             <div className="mt-5 space-y-2" aria-label={t('catalogDetail.availableFiles')}>
               {libraryBook.files.map((file) => {
                 const readable = canReadInBrowser(file.file_format);
+                let shareLabel = t('catalogDetail.openOtherApp');
+                if (fileAction === `share-${file.id}`) {
+                  shareLabel = t('catalogDetail.openingOtherApp');
+                }
+                if (preparedFileStates[file.id] === 'preparing') {
+                  shareLabel = 'Bestand voorbereiden…';
+                }
                 return (
                   <div
                     key={file.id}
@@ -651,11 +703,11 @@ export const CatalogBookPage = ({ canAddToLibrary }: CatalogBookPageProps) => {
                         type="button"
                         disabled={fileAction !== null}
                         className="rounded-md border border-(--border-muted) px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50"
+                        onPointerEnter={() => prepareFileForShare(file)}
+                        onFocus={() => prepareFileForShare(file)}
                         onClick={() => runFileAction('share', file)}
                       >
-                        {fileAction === `share-${file.id}`
-                          ? t('catalogDetail.openingOtherApp')
-                          : t('catalogDetail.openOtherApp')}
+                        {shareLabel}
                       </button>
                     </div>
                   </div>
