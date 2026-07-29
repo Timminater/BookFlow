@@ -98,6 +98,7 @@ export const CatalogBookPage = ({ canAddToLibrary }: CatalogBookPageProps) => {
   >({});
   const preparedFiles = useRef(new Map<number, File>());
   const preparingFiles = useRef(new Set<number>());
+  const preparedFileGeneration = useRef(0);
 
   const load = useCallback(async () => {
     setDetail(null);
@@ -130,6 +131,7 @@ export const CatalogBookPage = ({ canAddToLibrary }: CatalogBookPageProps) => {
   // so never retain them after navigating away from the book that requested
   // them.
   useDependencyEffect(() => {
+    preparedFileGeneration.current += 1;
     preparedFiles.current.clear();
     preparingFiles.current.clear();
     setPreparedFileStates({});
@@ -204,17 +206,24 @@ export const CatalogBookPage = ({ canAddToLibrary }: CatalogBookPageProps) => {
   if (progress !== null) openLabel = t('catalogDetail.continueReading');
   const prepareFileForShare = (file: NonNullable<typeof libraryBook>['files'][number]): void => {
     if (preparedFiles.current.has(file.id) || preparingFiles.current.has(file.id)) return;
+    const generation = preparedFileGeneration.current;
     preparingFiles.current.add(file.id);
     setPreparedFileStates((current) => ({ ...current, [file.id]: 'preparing' }));
     void fetchBookFile(v1Api.libraryFileDownloadUrl(book.id, file.id), book.title, file.file_format)
       .then(
         (preparedFile) => {
+          if (generation !== preparedFileGeneration.current) return;
           preparedFiles.current.set(file.id, preparedFile);
           setPreparedFileStates((current) => ({ ...current, [file.id]: 'ready' }));
         },
-        () => setPreparedFileStates((current) => ({ ...current, [file.id]: 'failed' })),
+        () => {
+          if (generation !== preparedFileGeneration.current) return;
+          setPreparedFileStates((current) => ({ ...current, [file.id]: 'failed' }));
+        },
       )
-      .finally(() => preparingFiles.current.delete(file.id));
+      .finally(() => {
+        if (generation === preparedFileGeneration.current) preparingFiles.current.delete(file.id);
+      });
   };
   const runFileAction = (
     action: 'download' | 'share',
@@ -226,8 +235,8 @@ export const CatalogBookPage = ({ canAddToLibrary }: CatalogBookPageProps) => {
         prepareFileForShare(file);
         setMessage(
           preparedFileStates[file.id] === 'failed'
-            ? 'Het bestand kon niet worden voorbereid. Gebruik Download om het opnieuw te proberen.'
-            : 'Bestand wordt voorbereid. Probeer Open in andere app opnieuw zodra het klaar is, of gebruik Download.',
+            ? t('catalogDetail.sharePreparationFailed')
+            : t('catalogDetail.sharePreparationPending'),
         );
         return;
       }
@@ -667,7 +676,7 @@ export const CatalogBookPage = ({ canAddToLibrary }: CatalogBookPageProps) => {
                   shareLabel = t('catalogDetail.openingOtherApp');
                 }
                 if (preparedFileStates[file.id] === 'preparing') {
-                  shareLabel = 'Bestand voorbereiden…';
+                  shareLabel = t('catalogDetail.preparingFile');
                 }
                 return (
                   <div

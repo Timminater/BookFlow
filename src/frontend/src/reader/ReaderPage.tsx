@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
+import { useLanguage } from '../contexts/LanguageContext';
 import { useDependencyEffect } from '../hooks/useMountEffect';
 import {
   offlineReadingLibrary,
@@ -39,6 +40,7 @@ interface ReaderOpenState {
 }
 
 export const ReaderPage = ({ accountId }: ReaderPageProps) => {
+  const { t } = useLanguage();
   const { bookId: rawBookId, fileId: rawFileId } = useParams();
   const navigate = useNavigate();
   const [openState, setOpenState] = useState<ReaderOpenState | null>(null);
@@ -262,8 +264,8 @@ export const ReaderPage = ({ accountId }: ReaderPageProps) => {
         if (preparedFile) return shareBookFile(preparedFile, file.title);
         const status =
           actionFileState === 'failed'
-            ? 'Het bestand kon niet worden voorbereid. Gebruik Download om het opnieuw te proberen.'
-            : 'Bestand wordt voorbereid. Probeer het zo opnieuw, of gebruik Download.';
+            ? t('catalogDetail.sharePreparationFailed')
+            : t('catalogDetail.sharePreparationPending');
         return Promise.reject(new Error(status));
       }}
     />

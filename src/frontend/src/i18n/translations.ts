@@ -260,6 +260,11 @@ const en = {
   'catalogDetail.downloading': 'Downloading…',
   'catalogDetail.openOtherApp': 'Open in another app',
   'catalogDetail.openingOtherApp': 'Opening…',
+  'catalogDetail.preparingFile': 'Preparing file…',
+  'catalogDetail.sharePreparationPending':
+    'The file is being prepared. Try opening it in another app again when it is ready, or use Download.',
+  'catalogDetail.sharePreparationFailed':
+    'The file could not be prepared. Use Download to try again.',
   'catalogDetail.requestBook': 'Request this book',
   'catalogDetail.requestCreated': 'Request created.',
   'catalogDetail.requestFailed': 'Request failed',
@@ -1103,6 +1108,11 @@ const nl: Record<TranslationKey, string> = {
   'catalogDetail.downloading': 'Downloaden…',
   'catalogDetail.openOtherApp': 'Open in andere app',
   'catalogDetail.openingOtherApp': 'Openen…',
+  'catalogDetail.preparingFile': 'Bestand voorbereiden…',
+  'catalogDetail.sharePreparationPending':
+    'Bestand wordt voorbereid. Probeer Open in andere app opnieuw zodra het klaar is, of gebruik Download.',
+  'catalogDetail.sharePreparationFailed':
+    'Het bestand kon niet worden voorbereid. Gebruik Download om het opnieuw te proberen.',
   'catalogDetail.requestBook': 'Dit boek aanvragen',
   'catalogDetail.requestCreated': 'Aanvraag aangemaakt.',
   'catalogDetail.requestFailed': 'Aanvraag mislukt',
