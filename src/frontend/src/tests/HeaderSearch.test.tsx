@@ -75,11 +75,19 @@ describe('global header search', () => {
       expect(await screen.findByText('Trending title')).toBeTruthy();
       expect(screen.getByText('Trending')).toBeTruthy();
       fireEvent.keyDown(input, { key: 'ArrowDown' });
-      expect(
-        screen.getByRole('option', { name: /Trending title/i }).getAttribute('aria-selected'),
-      ).toBe('true');
+      const resultOption = screen.getByRole('option', { name: /Trending title/i });
+      expect(resultOption.getAttribute('aria-selected')).toBe('true');
+      expect(resultOption.id).toBe('global-book-search-result-14');
+      expect(input.getAttribute('aria-activedescendant')).toBe(resultOption.id);
+      fireEvent.keyDown(input, { key: 'End' });
+      expect(input.getAttribute('aria-activedescendant')).toBe('global-book-search-external');
+      fireEvent.keyDown(input, { key: 'Home' });
+      expect(input.getAttribute('aria-activedescendant')).toBe(resultOption.id);
+      expect(screen.getByRole('listbox').className).toContain('max-h-[60vh]');
+      expect(screen.getByRole('listbox').className).toContain('w-full');
       fireEvent.keyDown(input, { key: 'Enter' });
       expect(screen.getByTestId('location').textContent).toBe('/suggestions/overall/14');
+      expect(input.getAttribute('aria-activedescendant')).toBeNull();
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -114,10 +122,25 @@ describe('global header search', () => {
       const external = await screen.findByRole('option', {
         name: /Search externally for “Dune Messiah”/i,
       });
-      fireEvent.click(external);
+      expect(external.id).toBe('global-book-search-external');
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      expect(input.getAttribute('aria-activedescendant')).toBe('global-book-search-external');
+      fireEvent.keyDown(input, { key: 'Escape' });
+      await waitFor(() => expect(input.getAttribute('aria-activedescendant')).toBeNull());
+      fireEvent.focus(input);
+      expect(await screen.findByRole('option', { name: /Search externally/i })).toBeTruthy();
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      fireEvent.mouseDown(document.body);
+      await waitFor(() => expect(input.getAttribute('aria-activedescendant')).toBeNull());
+      fireEvent.focus(input);
+      const reopenedExternal = await screen.findByRole('option', {
+        name: /Search externally for “Dune Messiah”/i,
+      });
+      fireEvent.click(reopenedExternal);
       expect(screen.getByTestId('location').textContent).toBe(
         '/catalog?q=Dune%20Messiah&external=1',
       );
+      expect(input.getAttribute('aria-activedescendant')).toBeNull();
 
       fireEvent.change(input, { target: { value: 'Foundation' } });
       const form = input.closest('form');

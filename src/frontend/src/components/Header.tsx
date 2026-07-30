@@ -162,6 +162,10 @@ export const Header = ({
     setSearchOpen(false);
   }, [location.pathname, location.search]);
 
+  useDependencyEffect(() => {
+    if (!searchOpen) setActiveSearchIndex(-1);
+  }, [searchOpen]);
+
   useMountEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const handler = (e: MediaQueryListEvent) => {
@@ -296,6 +300,14 @@ export const Header = ({
     if (book.is_trending) return t('search.trending');
     return t('search.metadata');
   };
+  let activeSearchOptionId: string | undefined;
+  if (searchOpen && activeSearchIndex >= 0) {
+    const activeBook = searchResults[activeSearchIndex];
+    if (activeBook) activeSearchOptionId = `global-book-search-result-${activeBook.id}`;
+    else if (activeSearchIndex === searchResults.length) {
+      activeSearchOptionId = 'global-book-search-external';
+    }
+  }
   const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (!searchOpen) return;
     const lastIndex = searchResults.length;
@@ -588,6 +600,7 @@ export const Header = ({
                 aria-autocomplete="list"
                 aria-expanded={searchOpen}
                 aria-controls="global-book-search-results"
+                aria-activedescendant={activeSearchOptionId}
                 className="w-full rounded-xl border border-(--border-muted) bg-(--bg-soft) py-2.5 pr-4 pl-9 text-sm shadow-sm transition outline-none focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/15"
               />
               {searchOpen && (
@@ -614,6 +627,7 @@ export const Header = ({
                   {searchResults.map((book, index) => (
                     <button
                       type="button"
+                      id={`global-book-search-result-${book.id}`}
                       role="option"
                       aria-selected={activeSearchIndex === index}
                       key={book.id}
@@ -637,6 +651,7 @@ export const Header = ({
                   ))}
                   <button
                     type="button"
+                    id="global-book-search-external"
                     role="option"
                     aria-selected={activeSearchIndex === searchResults.length}
                     onClick={() => {
