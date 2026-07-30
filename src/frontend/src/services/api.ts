@@ -864,6 +864,7 @@ export interface AdminUser {
   oidc_subject: string | null;
   created_at: string;
   library_capability: 'download-capable' | 'request-only';
+  auto_approve_requests: boolean;
   edit_capabilities: AdminUserEditCapabilities;
 }
 
@@ -989,6 +990,8 @@ export const createAdminUser = async (data: {
   email?: string;
   display_name?: string;
   role?: string;
+  library_capability?: AdminUser['library_capability'];
+  auto_approve_requests?: boolean;
 }): Promise<AdminUser> => {
   return fetchJSON<AdminUser>(`${API_BASE}/admin/users`, {
     method: 'POST',
@@ -1001,7 +1004,13 @@ export const updateAdminUser = async (
   data: Partial<
     Pick<
       AdminUser,
-      'username' | 'role' | 'email' | 'display_name' | 'library_capability' | 'is_active'
+      | 'username'
+      | 'role'
+      | 'email'
+      | 'display_name'
+      | 'library_capability'
+      | 'auto_approve_requests'
+      | 'is_active'
     >
   > & {
     password?: string;

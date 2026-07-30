@@ -65,6 +65,34 @@ def test_admin_can_create_regular_user_with_four_character_password(app, user_db
     assert response.status_code == 201
     assert response.json["username"] == "user"
     assert response.json["role"] == "user"
+    assert response.json["auto_approve_requests"] is False
+
+
+def test_admin_can_create_read_and_update_request_auto_approval_policy(app, user_db):
+    user_db.create_user(username="existing-admin", role="admin")
+    with patch("bookflow.core.admin_routes.load_active_auth_mode", return_value="builtin"):
+        created = _admin_client(app).post(
+            "/api/admin/users",
+            json={
+                "username": "trusted",
+                "password": "user",
+                "auto_approve_requests": True,
+            },
+        )
+        updated = _admin_client(app).put(
+            f"/api/admin/users/{created.json['id']}",
+            json={"auto_approve_requests": False},
+        )
+        invalid = _admin_client(app).put(
+            f"/api/admin/users/{created.json['id']}",
+            json={"auto_approve_requests": 1},
+        )
+
+    assert created.status_code == 201
+    assert created.json["auto_approve_requests"] is True
+    assert updated.status_code == 200
+    assert updated.json["auto_approve_requests"] is False
+    assert invalid.status_code == 400
 
 
 def test_admin_rejects_password_shorter_than_four_characters(app, user_db):

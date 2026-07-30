@@ -158,6 +158,55 @@ def test_duplicate_request_and_approval_are_idempotent(tmp_path):
     assert replay_created is False
 
 
+def test_user_policy_approves_only_the_requesters_own_request(tmp_path):
+    db_path = tmp_path / "users.db"
+    db, _admin, alice, bob, book_id = _seed(db_path)
+    service = RequestWorkflowService(db_path)
+    profile = {"formats": ["epub"]}
+    bob_request = service.create_request(user_id=bob["id"], book_id=book_id, profile=profile)
+    db.update_user(alice["id"], auto_approve_requests=True)
+
+    alice_request = service.create_request(
+        user_id=alice["id"],
+        book_id=book_id,
+        profile=profile,
+    )
+
+    assert alice_request["status"] == "approved"
+    assert alice_request["approval_source"] == "user_policy"
+    assert alice_request["reviewed_by"] == alice["id"]
+    assert alice_request["request_process_id"] is not None
+    conn = sqlite3.connect(db_path)
+    persisted_bob = conn.execute(
+        "SELECT status FROM requests WHERE id = ?", (bob_request["id"],)
+    ).fetchone()
+    conn.close()
+    assert persisted_bob is not None
+    assert persisted_bob[0] == "pending_approval"
+    with pytest.raises(RequestWorkflowError, match="Admin access required"):
+        service.approve_request(bob_request["id"], reviewer_user_id=alice["id"])
+
+
+def test_disabling_user_policy_is_not_retroactive(tmp_path):
+    db_path = tmp_path / "users.db"
+    db, _admin, alice, _bob, book_id = _seed(db_path)
+    db.update_user(alice["id"], auto_approve_requests=True)
+    service = RequestWorkflowService(db_path)
+    approved = service.create_request(
+        user_id=alice["id"], book_id=book_id, profile={"formats": ["epub"]}
+    )
+
+    db.update_user(alice["id"], auto_approve_requests=False)
+    conn = sqlite3.connect(db_path)
+    persisted = conn.execute(
+        "SELECT status, approval_source FROM requests WHERE id = ?", (approved["id"],)
+    ).fetchone()
+    conn.close()
+    assert persisted is not None
+
+    assert persisted == ("approved", "user_policy")
+
+
 def test_audiobook_request_is_rejected(tmp_path):
     db_path = tmp_path / "users.db"
     _db, _admin, alice, _bob, book_id = _seed(db_path)

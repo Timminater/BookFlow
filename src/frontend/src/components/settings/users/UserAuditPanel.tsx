@@ -140,6 +140,10 @@ export const UserAuditPanel = ({ userId, user, activeTab, onTabChange }: UserAud
               user.is_active ? text('Active', 'Actief') : text('Inactive', 'Inactief'),
             ],
             [text('Library access', 'Bibliotheektoegang'), user.library_capability],
+            [
+              text('Automatically approve own requests', 'Eigen verzoeken automatisch goedkeuren'),
+              user.auto_approve_requests ? text('Yes', 'Ja') : text('No', 'Nee'),
+            ],
             [text('Created', 'Aangemaakt'), formatDate(user.created_at, language)],
           ].map(([label, value]) => (
             <div

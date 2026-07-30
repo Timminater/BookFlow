@@ -7,6 +7,8 @@ export interface CreateUserFormState {
   password_confirm: string;
   display_name: string;
   role: string;
+  library_capability: 'download-capable' | 'request-only';
+  auto_approve_requests: boolean;
 }
 
 export const INITIAL_CREATE_FORM: CreateUserFormState = {
@@ -16,6 +18,8 @@ export const INITIAL_CREATE_FORM: CreateUserFormState = {
   password_confirm: '',
   display_name: '',
   role: 'user',
+  library_capability: 'download-capable',
+  auto_approve_requests: false,
 };
 
 export type UsersPanelRoute =
