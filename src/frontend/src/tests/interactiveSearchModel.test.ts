@@ -16,6 +16,7 @@ const candidate = (id: number, values: Partial<V1Candidate>): V1Candidate => ({
   file_format: 'epub',
   ...values,
 });
+const fallbacks = { unknown: 'Unknown', unknownSource: 'Unknown source' };
 
 describe('interactive search result presentation', () => {
   it('sorts all candidates including rejected candidates by profile score', () => {
@@ -28,7 +29,7 @@ describe('interactive search result presentation', () => {
 
   it('formats known and unknown sizes for scanable result rows', () => {
     expect(formatBytes(1024 * 1024 * 2)).toBe('2.0 MB');
-    expect(formatBytes(null)).toBe('Unknown');
+    expect(formatBytes(null, 'Unknown')).toBe('Unknown');
   });
 
   it('adapts all candidate metadata and server decisions', () => {
@@ -49,6 +50,7 @@ describe('interactive search result presentation', () => {
         reject_reasons: ['Blocked hash', 'Wrong language'],
         selected_by_admin: 1,
       }),
+      fallbacks,
     );
     expect(adapted).toMatchObject({
       id: 7,
@@ -69,7 +71,7 @@ describe('interactive search result presentation', () => {
   });
 
   it('uses safe fallbacks for missing optional candidate metadata', () => {
-    expect(toInteractiveCandidate(candidate(9, { file_format: null }))).toMatchObject({
+    expect(toInteractiveCandidate(candidate(9, { file_format: null }), fallbacks)).toMatchObject({
       title: '#9',
       source: 'Unknown source',
       indexer: null,
@@ -83,9 +85,10 @@ describe('interactive search result presentation', () => {
 
   it('filters by source, format and language without mutating input', () => {
     const originals = [
-      toInteractiveCandidate(candidate(1, { source: 'Prowlarr', language: 'nl' })),
+      toInteractiveCandidate(candidate(1, { source: 'Prowlarr', language: 'nl' }), fallbacks),
       toInteractiveCandidate(
         candidate(2, { source: 'Direct', language: 'en', file_format: 'pdf' }),
+        fallbacks,
       ),
     ];
     const snapshot = [...originals];

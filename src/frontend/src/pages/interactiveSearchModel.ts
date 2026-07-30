@@ -21,14 +21,22 @@ export interface InteractiveCandidate {
   selected: boolean;
 }
 
-export const formatBytes = (bytes: number | null | undefined): string => {
-  if (!bytes || bytes < 1) return 'Unknown';
+export interface InteractiveCandidateFallbacks {
+  unknown: string;
+  unknownSource: string;
+}
+
+export const formatBytes = (bytes: number | null | undefined, unknownFallback = ''): string => {
+  if (!bytes || bytes < 1) return unknownFallback;
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${(bytes / 1024 ** index).toFixed(index < 2 ? 0 : 1)} ${units[index]}`;
 };
 
-export const toInteractiveCandidate = (candidate: V1Candidate): InteractiveCandidate => {
+export const toInteractiveCandidate = (
+  candidate: V1Candidate,
+  fallbacks: InteractiveCandidateFallbacks,
+): InteractiveCandidate => {
   let decision: InteractiveDecision = 'rejected';
   if (candidate.blocked === 1) decision = 'blocked';
   else if (candidate.accepted === 1) decision = 'eligible';
@@ -36,12 +44,12 @@ export const toInteractiveCandidate = (candidate: V1Candidate): InteractiveCandi
     candidate,
     id: candidate.id,
     title: candidate.title?.trim() || `#${candidate.id}`,
-    source: candidate.source?.trim() || 'Unknown source',
+    source: candidate.source?.trim() || fallbacks.unknownSource,
     indexer: candidate.indexer?.trim() || null,
-    protocol: candidate.protocol?.trim() || 'Unknown',
-    language: candidate.language?.trim() || 'Unknown',
-    format: candidate.file_format?.trim().toUpperCase() || 'Unknown',
-    size: formatBytes(candidate.size_bytes),
+    protocol: candidate.protocol?.trim() || fallbacks.unknown,
+    language: candidate.language?.trim() || fallbacks.unknown,
+    format: candidate.file_format?.trim().toUpperCase() || fallbacks.unknown,
+    size: formatBytes(candidate.size_bytes, fallbacks.unknown),
     seeders: candidate.seeders ?? 0,
     peers: candidate.peers ?? 0,
     score: candidate.total_score,

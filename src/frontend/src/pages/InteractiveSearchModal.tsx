@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import { useLanguage } from '../contexts/LanguageContext';
 import { useDependencyEffect } from '../hooks/useMountEffect';
@@ -65,6 +65,12 @@ export const InteractiveSearchModal = ({
   const mounted = useRef(true);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollCount = useRef(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const tabRefs = useRef(new Map<string, HTMLButtonElement>());
+  const previousFocus = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   const clearPoll = () => {
     if (pollTimer.current) {
@@ -74,9 +80,38 @@ export const InteractiveSearchModal = ({
   };
   useDependencyEffect(() => {
     mounted.current = true;
+    previousFocus.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeButtonRef.current?.focus();
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      const focusable = [
+        ...dialogRef.current.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), select:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+        ),
+      ];
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
     return () => {
       mounted.current = false;
       clearPoll();
+      document.removeEventListener('keydown', handleKeyDown);
+      previousFocus.current?.focus();
     };
   }, []);
 
@@ -166,8 +201,14 @@ export const InteractiveSearchModal = ({
   };
 
   const presented = useMemo(
-    () => sortInteractiveCandidates(candidates, sort).map(toInteractiveCandidate),
-    [candidates, sort],
+    () =>
+      sortInteractiveCandidates(candidates, sort).map((candidate) =>
+        toInteractiveCandidate(candidate, {
+          unknown: t('common.unknown'),
+          unknownSource: t('interactiveSearch.unknownSource'),
+        }),
+      ),
+    [candidates, sort, t],
   );
   const sources = useMemo(
     () => [...new Set(presented.map((candidate) => candidate.source))],
@@ -201,6 +242,35 @@ export const InteractiveSearchModal = ({
       ? t('interactiveSearch.grabOverride')
       : t('interactiveSearch.grab');
   };
+  const runStatusLabel = (status: V1RequestSearchRun['status']): string => {
+    if (status === 'queued') return t('interactiveSearch.status.queued');
+    if (status === 'running') return t('interactiveSearch.status.running');
+    if (status === 'completed') return t('interactiveSearch.status.completed');
+    if (status === 'partial') return t('interactiveSearch.status.partial');
+    return t('interactiveSearch.status.failed');
+  };
+  const attemptStatusLabel = (status: string): string => {
+    if (status === 'pending') return t('interactiveSearch.attempt.pending');
+    if (status === 'running') return t('interactiveSearch.attempt.running');
+    if (status === 'completed') return t('interactiveSearch.attempt.completed');
+    if (status === 'failed') return t('interactiveSearch.attempt.failed');
+    if (status === 'cancelled') return t('interactiveSearch.attempt.cancelled');
+    return t('common.unknown');
+  };
+  const tabs = ['all', ...sources];
+  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, item: string) => {
+    const currentIndex = tabs.indexOf(item);
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length;
+    else if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = tabs.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const next = tabs[nextIndex];
+    setSource(next);
+    tabRefs.current.get(next)?.focus();
+  };
   const controlClass = 'min-h-11 rounded-md border border-(--border-muted) bg-(--bg) px-3 text-sm';
   return (
     <div
@@ -208,6 +278,7 @@ export const InteractiveSearchModal = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="interactive-search-heading"
+      ref={dialogRef}
     >
       <section className="min-h-full w-full max-w-6xl bg-(--bg) shadow-2xl sm:min-h-0 sm:rounded-2xl">
         <header className="flex items-start justify-between gap-4 border-b border-(--border-muted) p-5">
@@ -232,13 +303,15 @@ export const InteractiveSearchModal = ({
                   {profile ?? t('interactiveSearch.defaultProfile')}
                 </span>
                 <span className="rounded-full bg-(--bg-soft) px-2.5 py-1">
-                  {searchRun?.status ?? t('interactiveSearch.starting')} · {candidates.length}
+                  {searchRun ? runStatusLabel(searchRun.status) : t('interactiveSearch.starting')} ·{' '}
+                  {candidates.length}
                 </span>
               </div>
             </div>
           </div>
           <button
             type="button"
+            ref={closeButtonRef}
             className="min-h-11 min-w-11 rounded-full text-xl hover:bg-(--hover-surface)"
             onClick={onClose}
             aria-label={t('interactiveSearch.close')}
@@ -251,14 +324,21 @@ export const InteractiveSearchModal = ({
           role="tablist"
           aria-label={t('interactiveSearch.sources')}
         >
-          {['all', ...sources].map((item) => (
+          {tabs.map((item) => (
             <button
               key={item}
               type="button"
               role="tab"
               aria-selected={source === item}
+              aria-controls="interactive-search-results"
+              tabIndex={source === item ? 0 : -1}
+              ref={(element) => {
+                if (element) tabRefs.current.set(item, element);
+                else tabRefs.current.delete(item);
+              }}
               className={`min-h-11 shrink-0 border-b-2 px-4 text-sm font-medium ${source === item ? 'border-violet-500 text-violet-600 dark:text-violet-300' : 'border-transparent opacity-65'}`}
               onClick={() => setSource(item)}
+              onKeyDown={(event) => handleTabKeyDown(event, item)}
             >
               {item === 'all' ? t('interactiveSearch.allSources') : item} ({sourceCount(item)})
             </button>
@@ -269,7 +349,7 @@ export const InteractiveSearchModal = ({
             {searching
               ? t('interactiveSearch.searching')
               : t('interactiveSearch.results', { count: ordered.length })}
-            {searchRun ? ` · ${searchRun.status}` : ''}
+            {searchRun ? ` · ${runStatusLabel(searchRun.status)}` : ''}
           </p>
           <div className="flex flex-wrap gap-2">
             <select
@@ -333,7 +413,7 @@ export const InteractiveSearchModal = ({
             {errors.join(' · ')}
           </p>
         )}
-        <div className="space-y-3 p-3 sm:p-5">
+        <div id="interactive-search-results" role="tabpanel" className="space-y-3 p-3 sm:p-5">
           {ordered.map((item) => (
             <article
               key={item.id}
@@ -407,7 +487,7 @@ export const InteractiveSearchModal = ({
               ) : (
                 attempts.map((attempt) => (
                   <p key={attempt.id}>
-                    #{attempt.attempt_number} · {attempt.status}
+                    #{attempt.attempt_number} · {attemptStatusLabel(attempt.status)}
                     {attempt.error_message ? ` · ${attempt.error_message}` : ''}
                   </p>
                 ))
