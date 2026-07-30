@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, useLocation, useNavigate, type NavigateFunction } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Header } from '../components/Header';
@@ -15,8 +15,11 @@ Object.defineProperty(window, 'matchMedia', {
   }),
 });
 
+let navigateFromTest: NavigateFunction | undefined;
+
 const LocationProbe = () => {
   const location = useLocation();
+  navigateFromTest = useNavigate();
   return <output data-testid="location">{`${location.pathname}${location.search}`}</output>;
 };
 
@@ -30,7 +33,10 @@ const renderHeader = () =>
     </MemoryRouter>,
   );
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  navigateFromTest = undefined;
+});
 
 const requestUrl = (input: RequestInfo | URL): string => {
   if (input instanceof Request) return input.url;
@@ -79,6 +85,10 @@ describe('global header search', () => {
       expect(resultOption.getAttribute('aria-selected')).toBe('true');
       expect(resultOption.id).toBe('global-book-search-result-14');
       expect(input.getAttribute('aria-activedescendant')).toBe(resultOption.id);
+      fireEvent.keyDown(input, { key: 'ArrowUp' });
+      expect(input.getAttribute('aria-activedescendant')).toBe('global-book-search-external');
+      fireEvent.keyDown(input, { key: 'ArrowUp' });
+      expect(input.getAttribute('aria-activedescendant')).toBe(resultOption.id);
       fireEvent.keyDown(input, { key: 'End' });
       expect(input.getAttribute('aria-activedescendant')).toBe('global-book-search-external');
       fireEvent.keyDown(input, { key: 'Home' });
@@ -125,6 +135,11 @@ describe('global header search', () => {
       expect(external.id).toBe('global-book-search-external');
       fireEvent.keyDown(input, { key: 'ArrowDown' });
       expect(input.getAttribute('aria-activedescendant')).toBe('global-book-search-external');
+      fireEvent.change(input, { target: { value: 'Dune Messiah revised' } });
+      expect(input.getAttribute('aria-activedescendant')).toBeNull();
+      fireEvent.change(input, { target: { value: 'Dune Messiah' } });
+      await screen.findByRole('option', { name: /Search externally for “Dune Messiah”/i });
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
       fireEvent.keyDown(input, { key: 'Escape' });
       await waitFor(() => expect(input.getAttribute('aria-activedescendant')).toBeNull());
       fireEvent.focus(input);
@@ -132,6 +147,12 @@ describe('global header search', () => {
       fireEvent.keyDown(input, { key: 'ArrowDown' });
       fireEvent.mouseDown(document.body);
       await waitFor(() => expect(input.getAttribute('aria-activedescendant')).toBeNull());
+      fireEvent.focus(input);
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      await act(async () => navigateFromTest?.('/library?audit=1'));
+      expect(screen.getByTestId('location').textContent).toBe('/library?audit=1');
+      expect(input.getAttribute('aria-expanded')).toBe('false');
+      expect(input.getAttribute('aria-activedescendant')).toBeNull();
       fireEvent.focus(input);
       const reopenedExternal = await screen.findByRole('option', {
         name: /Search externally for “Dune Messiah”/i,
