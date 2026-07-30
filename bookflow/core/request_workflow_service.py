@@ -174,7 +174,8 @@ class RequestWorkflowService:
             )
 
         conn = self._connect()
-        is_admin = False
+        auto_approve = False
+        approval_source = "admin"
         created: dict[str, Any] | None = None
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -187,6 +188,8 @@ class RequestWorkflowService:
                     status_code=403,
                 )
             is_admin = str(user["role"]) == "admin"
+            auto_approve = is_admin or bool(user["auto_approve_requests"])
+            approval_source = "admin" if is_admin else "user_policy"
 
             if (
                 reject_if_available
@@ -271,9 +274,11 @@ class RequestWorkflowService:
             conn.close()
         if created is None:
             raise RuntimeError("Request insert did not return a row")
-        if is_admin:
+        if auto_approve:
             approved, _request_process, _created = self.approve_request(
-                int(created["id"]), reviewer_user_id=user_id
+                int(created["id"]),
+                reviewer_user_id=user_id,
+                _requester_policy=approval_source == "user_policy",
             )
             return approved
         return created
@@ -283,19 +288,29 @@ class RequestWorkflowService:
         request_id: int,
         *,
         reviewer_user_id: int,
+        _requester_policy: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, bool]:
         """Approve idempotently and create or join exactly one active request_process."""
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
             reviewer = self._load_required(conn, "users", reviewer_user_id)
-            if reviewer["role"] != "admin" or not bool(reviewer["is_active"]):
+            request_row = self._load_required(conn, "requests", request_id)
+            is_authorized_policy = (
+                _requester_policy
+                and int(request_row["user_id"]) == reviewer_user_id
+                and bool(reviewer["auto_approve_requests"])
+                and bool(reviewer["is_active"])
+            )
+            if not is_authorized_policy and (
+                reviewer["role"] != "admin" or not bool(reviewer["is_active"])
+            ):
                 _raise_domain(
                     "Admin access required",
                     code="admin_required",
                     status_code=403,
                 )
-            request_row = self._load_required(conn, "requests", request_id)
+            approval_source = "user_policy" if is_authorized_policy else "admin"
             current_status = RequestStatus(request_row["status"])
             if current_status in {RequestStatus.FULFILLED, RequestStatus.APPROVED}:
                 request_process = (
@@ -343,7 +358,7 @@ class RequestWorkflowService:
                     """
                     UPDATE requests
                     SET status = 'fulfilled', fulfilled_file_id = ?, fulfilled_at = ?,
-                        reviewed_by = ?, reviewed_at = ?, updated_at = ?
+                        reviewed_by = ?, reviewed_at = ?, approval_source = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (
@@ -351,6 +366,7 @@ class RequestWorkflowService:
                         reviewed_at,
                         reviewer_user_id,
                         reviewed_at,
+                        approval_source,
                         reviewed_at,
                         request_id,
                     ),
@@ -398,8 +414,15 @@ class RequestWorkflowService:
                 )
 
             pending = conn.execute(
-                "SELECT * FROM requests WHERE book_id=? AND content_type=? AND status='pending_approval'",
-                (request_row["book_id"], request_row["content_type"]),
+                """SELECT * FROM requests
+                   WHERE book_id=? AND content_type=? AND status='pending_approval'
+                     AND (? = 0 OR id = ?)""",
+                (
+                    request_row["book_id"],
+                    request_row["content_type"],
+                    int(is_authorized_policy),
+                    request_id,
+                ),
             ).fetchall()
             for item in pending:
                 conn.execute(
@@ -414,8 +437,15 @@ class RequestWorkflowService:
                 )
                 conn.execute(
                     """UPDATE requests SET status='approved', request_process_id=?, reviewed_by=?,
-                       reviewed_at=?, updated_at=? WHERE id=?""",
-                    (request_process["id"], reviewer_user_id, reviewed_at, reviewed_at, item["id"]),
+                       reviewed_at=?, approval_source=?, updated_at=? WHERE id=?""",
+                    (
+                        request_process["id"],
+                        reviewer_user_id,
+                        reviewed_at,
+                        approval_source,
+                        reviewed_at,
+                        item["id"],
+                    ),
                 )
             approved = self._load_required(conn, "requests", request_id)
             conn.commit()

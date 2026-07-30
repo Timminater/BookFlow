@@ -1108,6 +1108,14 @@ END;
 """
 _MIGRATION_029_CHECKSUM = hashlib.sha256(_MIGRATION_029_DEFINITION.encode()).hexdigest()
 
+_MIGRATION_030_DEFINITION = """
+ALTER TABLE users ADD COLUMN auto_approve_requests INTEGER NOT NULL DEFAULT 0
+CHECK (auto_approve_requests IN (0, 1));
+ALTER TABLE requests ADD COLUMN approval_source TEXT
+CHECK (approval_source IN ('admin', 'user_policy'));
+"""
+_MIGRATION_030_CHECKSUM = hashlib.sha256(_MIGRATION_030_DEFINITION.encode()).hexdigest()
+
 
 def _require_loaded_user(user: dict[str, Any] | None) -> dict[str, Any]:
     """Return a loaded user row or raise when the DB insert result is inconsistent."""
@@ -1406,6 +1414,12 @@ class UserDB:
                             checksum=_MIGRATION_029_CHECKSUM,
                             apply=self._apply_migration_029,
                         ),
+                        Migration(
+                            version=30,
+                            name="per-user-request-auto-approval",
+                            checksum=_MIGRATION_030_CHECKSUM,
+                            apply=self._apply_migration_030,
+                        ),
                     ),
                 )
                 migrator.migrate()
@@ -1674,6 +1688,11 @@ class UserDB:
     @staticmethod
     def _apply_migration_029(conn: sqlite3.Connection) -> None:
         _execute_sql_script(conn, _MIGRATION_029_DEFINITION)
+
+    @staticmethod
+    def _apply_migration_030(conn: sqlite3.Connection) -> None:
+        """Add the per-user request policy and its approval audit source."""
+        _execute_sql_script(conn, _MIGRATION_030_DEFINITION)
 
     @staticmethod
     def _backfill_catalog_phase_one(conn: sqlite3.Connection) -> None:
@@ -2260,6 +2279,7 @@ class UserDB:
         auth_source: str = "builtin",
         role: str = "user",
         library_capability: str = "download-capable",
+        auto_approve_requests: bool = False,
         preferred_language: str | None = None,
     ) -> dict[str, Any]:
         """Create a new user. Raises ValueError if username or oidc_subject already exists."""
@@ -2269,6 +2289,9 @@ class UserDB:
         if library_capability not in self._VALID_LIBRARY_CAPABILITIES:
             msg = f"Invalid library_capability: {library_capability}"
             raise ValueError(msg)
+        if not isinstance(auto_approve_requests, bool):
+            msg = "auto_approve_requests must be a boolean"
+            raise TypeError(msg)
         if preferred_language is None:
             from bookflow.core.config import config
 
@@ -2287,9 +2310,9 @@ class UserDB:
                 cursor = conn.execute(
                     """INSERT INTO users (
                            username, email, display_name, password_hash, oidc_subject, auth_source, role,
-                           library_capability
+                           library_capability, auto_approve_requests
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         username,
                         email,
@@ -2299,6 +2322,7 @@ class UserDB:
                         auth_source,
                         role,
                         library_capability,
+                        int(auto_approve_requests),
                     ),
                 )
                 user_id = cursor.lastrowid
@@ -2356,6 +2380,7 @@ class UserDB:
             "role",
             "is_active",
             "library_capability",
+            "auto_approve_requests",
         }
     )
     _USER_UPDATE_STATEMENTS: ClassVar[dict[str, str]] = {
@@ -2368,6 +2393,7 @@ class UserDB:
         "role": "UPDATE users SET role = ? WHERE id = ?",
         "is_active": "UPDATE users SET is_active = ? WHERE id = ?",
         "library_capability": "UPDATE users SET library_capability = ? WHERE id = ?",
+        "auto_approve_requests": "UPDATE users SET auto_approve_requests = ? WHERE id = ?",
     }
 
     def update_user(self, user_id: int, **kwargs: object) -> None:
@@ -2386,6 +2412,11 @@ class UserDB:
             and kwargs["library_capability"] not in self._VALID_LIBRARY_CAPABILITIES
         ):
             msg = f"Invalid library_capability: {kwargs['library_capability']}"
+            raise ValueError(msg)
+        if "auto_approve_requests" in kwargs and not isinstance(
+            kwargs["auto_approve_requests"], bool
+        ):
+            msg = "auto_approve_requests must be a boolean"
             raise ValueError(msg)
         with self._lock:
             conn = self._connect()
