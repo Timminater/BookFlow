@@ -375,7 +375,15 @@ export interface V1RequestSearchRun {
 export interface V1Attempt {
   id: number;
   request_process_id: number;
-  status: string;
+  status:
+    | 'queued'
+    | 'submitted'
+    | 'downloading'
+    | 'importing'
+    | 'completed'
+    | 'retry_scheduled'
+    | 'failed'
+    | 'cancelled';
   attempt_number: number;
   retry_count: number;
   candidate_id?: number | null;

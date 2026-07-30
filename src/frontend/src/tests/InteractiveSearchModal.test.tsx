@@ -114,19 +114,27 @@ describe('InteractiveSearchModal', () => {
     expect(screen.getByText(/EPUB NL/)).toBeTruthy();
   });
 
-  it('localizes candidate fallbacks, run state and attempt state in Dutch', async () => {
+  it('localizes candidate fallbacks and every backend attempt state in Dutch', async () => {
+    const attemptStates = [
+      'queued',
+      'submitted',
+      'downloading',
+      'importing',
+      'completed',
+      'retry_scheduled',
+      'failed',
+      'cancelled',
+    ] as const;
     mockApi(
       'partial',
       [candidate(1, { source: null, language: null, file_format: null })],
-      [
-        {
-          id: 2,
-          request_process_id: 4,
-          status: 'running',
-          attempt_number: 1,
-          retry_count: 0,
-        },
-      ],
+      attemptStates.map((status, index) => ({
+        id: index + 1,
+        request_process_id: 4,
+        status,
+        attempt_number: index + 1,
+        retry_count: 0,
+      })),
     );
     renderModal('nl');
 
@@ -134,7 +142,33 @@ describe('InteractiveSearchModal', () => {
     expect(screen.getByRole('tab', { name: /Onbekende bron/ })).toBeTruthy();
     expect(screen.getAllByText('Onbekend').length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('button', { name: /Downloadpogingen tonen/ }));
-    expect(screen.getByText(/Bezig met downloaden/)).toBeTruthy();
+    for (const label of [
+      'In wachtrij',
+      'Ingediend bij downloadclient',
+      'Bezig met downloaden',
+      'Bezig met importeren',
+      'Voltooid',
+      'Nieuwe poging gepland',
+      'Mislukt',
+      'Geannuleerd',
+    ]) {
+      expect(screen.getAllByText(new RegExp(label)).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('uses the localized unknown fallback only for an unrecognized runtime attempt state', async () => {
+    const unknownAttempt: Awaited<ReturnType<typeof v1Api.attempts>>['items'][number] = {
+      id: 1,
+      request_process_id: 4,
+      status: 'cancelled',
+      attempt_number: 1,
+      retry_count: 0,
+    };
+    Object.defineProperty(unknownAttempt, 'status', { value: 'future_backend_state' });
+    mockApi('completed', [], [unknownAttempt]);
+    renderModal('nl');
+    fireEvent.click(await screen.findByRole('button', { name: /Downloadpogingen tonen/ }));
+    expect(screen.getByText(/#1 · Onbekend/)).toBeTruthy();
   });
 
   it('starts a new durable run and refreshes the current run', async () => {

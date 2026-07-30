@@ -250,9 +250,12 @@ export const InteractiveSearchModal = ({
     return t('interactiveSearch.status.failed');
   };
   const attemptStatusLabel = (status: string): string => {
-    if (status === 'pending') return t('interactiveSearch.attempt.pending');
-    if (status === 'running') return t('interactiveSearch.attempt.running');
+    if (status === 'queued') return t('interactiveSearch.attempt.queued');
+    if (status === 'submitted') return t('interactiveSearch.attempt.submitted');
+    if (status === 'downloading') return t('interactiveSearch.attempt.downloading');
+    if (status === 'importing') return t('interactiveSearch.attempt.importing');
     if (status === 'completed') return t('interactiveSearch.attempt.completed');
+    if (status === 'retry_scheduled') return t('interactiveSearch.attempt.retryScheduled');
     if (status === 'failed') return t('interactiveSearch.attempt.failed');
     if (status === 'cancelled') return t('interactiveSearch.attempt.cancelled');
     return t('common.unknown');
