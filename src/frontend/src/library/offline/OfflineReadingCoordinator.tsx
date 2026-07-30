@@ -17,7 +17,7 @@ import {
   progressFromV1,
   sendPendingProgress,
 } from './offlineRuntime';
-import type { OfflineBook } from './types';
+import type { OfflineBook, OfflineCacheErrorCode, OfflineCacheOutcome } from './types';
 
 interface OfflineReadingApi {
   readingProgress: () => Promise<V1Page<V1ReadingProgress>>;
@@ -26,8 +26,11 @@ interface OfflineReadingApi {
 
 export interface OfflineCacheSyncResult {
   books: OfflineBook[];
-  failedBookIds: number[];
+  outcomes: OfflineCacheOutcome[];
 }
+
+const MAX_OFFLINE_BOOKS = 3;
+const MAX_OFFLINE_CANDIDATES = 12;
 
 export const selectOfflineReadingCandidates = (items: V1ReadingProgress[]): V1ReadingProgress[] =>
   items
@@ -37,7 +40,85 @@ export const selectOfflineReadingCandidates = (items: V1ReadingProgress[]): V1Re
         Date.parse(right.reader_updated_at ?? right.updated_at) -
         Date.parse(left.reader_updated_at ?? left.updated_at),
     )
-    .slice(0, 3);
+    // A repeated progress record must not consume another cache slot.
+    .filter(
+      (item, index, sorted) =>
+        sorted.findIndex((other) => other.book_id === item.book_id) === index,
+    )
+    // Do not scan an unbounded reading history when several entries are invalid.
+    .slice(0, MAX_OFFLINE_CANDIDATES);
+
+const statusFromError = (error: unknown): number | null => {
+  if (typeof error !== 'object' || error === null || !('status' in error)) return null;
+  const status = (error as { status?: unknown }).status;
+  return typeof status === 'number' ? status : null;
+};
+
+const classifyError = (error: unknown, phase: 'detail' | 'download'): OfflineCacheErrorCode => {
+  const status = statusFromError(error);
+  if (status === 401 || status === 403) return 'not_entitled';
+  if (status === 404) return phase === 'detail' ? 'detail_unavailable' : 'file_missing';
+  const name = error instanceof Error ? error.name : '';
+  const message = error instanceof Error ? error.message.toLowerCase() : '';
+  if (name === 'QuotaExceededError' || message.includes('quota')) return 'storage_quota';
+  if (message.includes('indexeddb') || name === 'InvalidStateError') return 'indexeddb_failed';
+  return phase === 'detail' ? 'detail_unavailable' : 'download_failed';
+};
+
+const isPermanent = (code: OfflineCacheErrorCode): boolean =>
+  code === 'not_entitled' || code === 'file_missing' || code === 'unsupported_format';
+
+const failureFingerprint = (accountId: string, outcome: OfflineCacheOutcome): string =>
+  `${accountId}:${outcome.bookId}:${outcome.fileId ?? 'none'}:${outcome.errorCode ?? 'none'}`;
+
+/**
+ * Keep current failure state separate from notification de-duplication.
+ * The returned fingerprint set deliberately drops recovered, replaced, and
+ * ineligible entries so a later recurrence can be reported as a new cycle.
+ */
+export const reconcileOfflineFailureFingerprints = (
+  accountId: string,
+  outcomes: OfflineCacheOutcome[],
+  previous: ReadonlySet<string>,
+): {
+  failures: OfflineCacheOutcome[];
+  newFailures: OfflineCacheOutcome[];
+  fingerprints: Set<string>;
+} => {
+  const retryable = outcomes.filter((outcome) => outcome.status === 'temporarily_failed');
+  const fingerprints = new Set(retryable.map((outcome) => failureFingerprint(accountId, outcome)));
+  return {
+    failures: retryable,
+    newFailures: retryable.filter(
+      (outcome) => !previous.has(failureFingerprint(accountId, outcome)),
+    ),
+    fingerprints,
+  };
+};
+
+const failureStorageKey = (accountId: string): string =>
+  `bookflow:offline-cache-failures:${accountId}`;
+
+const readFailureFingerprints = (accountId: string): Set<string> => {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(failureStorageKey(accountId)) ?? '[]');
+    return new Set(
+      Array.isArray(parsed)
+        ? parsed.filter((value): value is string => typeof value === 'string')
+        : [],
+    );
+  } catch {
+    return new Set();
+  }
+};
+
+const saveFailureFingerprints = (accountId: string, fingerprints: ReadonlySet<string>): void => {
+  try {
+    localStorage.setItem(failureStorageKey(accountId), JSON.stringify([...fingerprints]));
+  } catch {
+    // Private mode or a full browser store must not make reader caching fail.
+  }
+};
 
 /**
  * Cache candidates oldest-to-newest so the newest activity wins eviction.
@@ -52,54 +133,110 @@ export const syncOfflineContinueReading = async (
 ): Promise<OfflineCacheSyncResult> => {
   const page = await api.readingProgress();
   const candidates = selectOfflineReadingCandidates(page.items);
-  const desiredBookIds = new Set(candidates.map((candidate) => candidate.book_id));
-  const desiredFileIds = new Set(
-    candidates
-      .map((candidate) => candidate.file_id)
-      .filter((fileId): fileId is number => typeof fileId === 'number'),
-  );
-  const failedBookIds: number[] = [];
+  const desiredBookIds = new Set<number>();
+  const desiredFileIds = new Set<number>();
+  const outcomes: OfflineCacheOutcome[] = [];
+  let fulfilled = 0;
 
   /* oxlint-disable no-await-in-loop -- deterministic cache eviction requires ordered writes */
   for (const progress of candidates.toReversed()) {
+    if (fulfilled >= MAX_OFFLINE_BOOKS) break;
+    let detail: V1BookDetail;
     try {
-      const detail = await api.book(progress.book_id);
-      const file =
-        detail.files.find(
-          (entry) => entry.id === progress.file_id && canReadInBrowser(entry.file_format),
-        ) ?? detail.files.find((entry) => canReadInBrowser(entry.file_format));
-      if (!file) {
-        failedBookIds.push(progress.book_id);
-        continue;
-      }
-      desiredFileIds.add(file.id);
-      const readerFile = readerFileFromV1({
+      detail = await api.book(progress.book_id);
+    } catch (error) {
+      const errorCode = classifyError(error, 'detail');
+      outcomes.push({
         bookId: progress.book_id,
-        fileId: file.id,
-        title: detail.book.title,
-        author: detail.book.author,
-        format: file.file_format,
+        fileId: progress.file_id ?? null,
+        title: progress.title ?? null,
+        status: isPermanent(errorCode) ? 'permanently_ineligible' : 'temporarily_failed',
+        errorCode,
       });
-      const metadata = {
-        accountId,
+      continue;
+    }
+    const file =
+      detail.files.find(
+        (entry) => entry.id === progress.file_id && canReadInBrowser(entry.file_format),
+      ) ?? detail.files.find((entry) => canReadInBrowser(entry.file_format));
+    if (!file) {
+      outcomes.push({
         bookId: progress.book_id,
-        fileId: file.id,
+        fileId: progress.file_id ?? null,
         title: detail.book.title,
-        author: detail.book.author,
-        format: file.file_format,
-        coverUrl: detail.book.cover_url,
-        contentUrl: readerFile.contentUrl,
-        progress: progressFromV1(progress),
-      };
+        status: 'permanently_ineligible',
+        errorCode: detail.files.length ? 'unsupported_format' : 'file_missing',
+      });
+      continue;
+    }
+    const readerFile = readerFileFromV1({
+      bookId: progress.book_id,
+      fileId: file.id,
+      title: detail.book.title,
+      author: detail.book.author,
+      format: file.file_format,
+    });
+    const metadata = {
+      accountId,
+      bookId: progress.book_id,
+      fileId: file.id,
+      title: detail.book.title,
+      author: detail.book.author,
+      format: file.file_format,
+      coverUrl: detail.book.cover_url,
+      contentUrl: readerFile.contentUrl,
+      progress: progressFromV1(progress),
+    };
+    try {
       const cached = await library.getBook(accountId, file.id);
       if (cached) {
         await library.cacheBook({ ...cached, ...metadata }, protectedFileIds());
-        await library.refreshBook(accountId, file.id);
+        try {
+          await library.refreshBook(accountId, file.id);
+          outcomes.push({
+            bookId: metadata.bookId,
+            fileId: metadata.fileId,
+            title: metadata.title,
+            status: 'cached',
+            errorCode: null,
+          });
+        } catch (error) {
+          const errorCode = classifyError(error, 'download');
+          // cacheBook has already safely retained the old complete Blob.
+          desiredBookIds.add(progress.book_id);
+          desiredFileIds.add(file.id);
+          fulfilled += 1;
+          outcomes.push({
+            bookId: metadata.bookId,
+            fileId: metadata.fileId,
+            title: metadata.title,
+            status: 'kept_existing_copy',
+            errorCode,
+          });
+          continue;
+        }
       } else {
         await library.downloadAndCache(metadata, protectedFileIds());
+        outcomes.push({
+          bookId: metadata.bookId,
+          fileId: metadata.fileId,
+          title: metadata.title,
+          status: 'cached',
+          errorCode: null,
+        });
       }
-    } catch {
-      failedBookIds.push(progress.book_id);
+      desiredBookIds.add(progress.book_id);
+      desiredFileIds.add(file.id);
+      fulfilled += 1;
+    } catch (error) {
+      const errorCode = classifyError(error, 'download');
+      outcomes.push({
+        bookId: progress.book_id,
+        fileId: file.id,
+        title: detail.book.title,
+        status: isPermanent(errorCode) ? 'permanently_ineligible' : 'temporarily_failed',
+        errorCode,
+      });
     }
   }
   /* oxlint-enable no-await-in-loop */
@@ -117,18 +254,24 @@ export const syncOfflineContinueReading = async (
   );
   return {
     books: await library.listContinueReading(accountId),
-    failedBookIds,
+    outcomes,
   };
 };
 
 type OfflineCacheStatus = 'loading' | 'syncing' | 'ready' | 'error';
+
+export const offlineCacheStatusFromFailures = (
+  failures: readonly OfflineCacheOutcome[],
+): OfflineCacheStatus => (failures.length ? 'error' : 'ready');
 
 interface OfflineReadingContextValue {
   books: OfflineBook[];
   cachedFileIds: ReadonlySet<number>;
   status: OfflineCacheStatus;
   failedBookCount: number;
+  failures: OfflineCacheOutcome[];
   refreshBooks: () => Promise<void>;
+  retryOfflineCache: () => Promise<void>;
 }
 
 const OfflineReadingContext = createContext<OfflineReadingContextValue>({
@@ -136,11 +279,26 @@ const OfflineReadingContext = createContext<OfflineReadingContextValue>({
   cachedFileIds: new Set(),
   status: 'loading',
   failedBookCount: 0,
+  failures: [],
   refreshBooks: async () => undefined,
+  retryOfflineCache: async () => undefined,
 });
 
 export const useOfflineReading = (): OfflineReadingContextValue =>
   useContext(OfflineReadingContext);
+
+const reconcileStoredFailureState = (
+  accountId: string,
+  outcomes: OfflineCacheOutcome[],
+): ReturnType<typeof reconcileOfflineFailureFingerprints> => {
+  const reconciled = reconcileOfflineFailureFingerprints(
+    accountId,
+    outcomes,
+    readFailureFingerprints(accountId),
+  );
+  saveFailureFingerprints(accountId, reconciled.fingerprints);
+  return reconciled;
+};
 
 export const OfflineReadingProvider = ({
   accountId,
@@ -153,6 +311,7 @@ export const OfflineReadingProvider = ({
   const [books, setBooks] = useState<OfflineBook[]>([]);
   const [status, setStatus] = useState<OfflineCacheStatus>('loading');
   const [failedBookCount, setFailedBookCount] = useState(0);
+  const [failures, setFailures] = useState<OfflineCacheOutcome[]>([]);
 
   const refreshBooks = useCallback(async () => {
     try {
@@ -198,11 +357,17 @@ export const OfflineReadingProvider = ({
         const result = await syncOfflineContinueReading(accountId);
         if (cancelled) return;
         setBooks(result.books);
-        setFailedBookCount(result.failedBookIds.length);
-        setStatus(result.failedBookIds.length ? 'error' : 'ready');
+        const { failures: retryableFailures } = reconcileStoredFailureState(
+          accountId,
+          result.outcomes,
+        );
+        setFailures(retryableFailures);
+        setFailedBookCount(retryableFailures.length);
+        setStatus(offlineCacheStatusFromFailures(retryableFailures));
       } catch {
         if (!cancelled) {
           setFailedBookCount(0);
+          setFailures([]);
           setStatus('error');
         }
       } finally {
@@ -220,15 +385,28 @@ export const OfflineReadingProvider = ({
     };
   }, [accountId, isOnline]);
 
+  const retryOfflineCache = useCallback(async () => {
+    if (!isOnline) return;
+    setStatus('syncing');
+    const result = await syncOfflineContinueReading(accountId);
+    const { failures: retryableFailures } = reconcileStoredFailureState(accountId, result.outcomes);
+    setBooks(result.books);
+    setFailures(retryableFailures);
+    setFailedBookCount(retryableFailures.length);
+    setStatus(offlineCacheStatusFromFailures(retryableFailures));
+  }, [accountId, isOnline]);
+
   const value = useMemo(
     () => ({
       books,
       cachedFileIds: new Set(books.map((book) => book.fileId)),
       status,
       failedBookCount,
+      failures,
       refreshBooks,
+      retryOfflineCache,
     }),
-    [books, failedBookCount, refreshBooks, status],
+    [books, failedBookCount, failures, refreshBooks, retryOfflineCache, status],
   );
 
   return <OfflineReadingContext.Provider value={value}>{children}</OfflineReadingContext.Provider>;
