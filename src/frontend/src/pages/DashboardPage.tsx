@@ -33,7 +33,13 @@ export const DashboardPage = () => {
   const [errors, setErrors] = useState<Partial<Record<DashboardSectionKey, string>>>({});
   const [loading, setLoading] = useState(true);
   const trendingBulk = useBulkLibrarySelection('dashboard-trending');
-  const { cachedFileIds, status: offlineCacheStatus, failedBookCount } = useOfflineReading();
+  const {
+    cachedFileIds,
+    status: offlineCacheStatus,
+    failedBookCount,
+    failures,
+    retryOfflineCache,
+  } = useOfflineReading();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -61,6 +67,22 @@ export const DashboardPage = () => {
           {failedBookCount > 0
             ? t('offline.onlineCacheFailure', { count: failedBookCount })
             : t('offline.cacheFailure')}
+          {failures.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <span className="opacity-80">
+                {failures
+                  .map((failure) => `${failure.title ?? failure.bookId} (${failure.errorCode})`)
+                  .join(', ')}
+              </span>
+              <button
+                type="button"
+                className="rounded border border-amber-500/50 px-2 py-1 text-xs font-medium"
+                onClick={() => void retryOfflineCache()}
+              >
+                {t('offline.retry')}
+              </button>
+            </div>
+          )}
         </div>
       )}
       <DashboardShelf

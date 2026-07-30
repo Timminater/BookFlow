@@ -71,6 +71,30 @@ export interface RefreshResult {
   etag: string | null;
 }
 
+/** Safe, stable diagnostics for a single Continue Reading cache candidate. */
+export type OfflineCacheErrorCode =
+  | 'detail_unavailable'
+  | 'not_entitled'
+  | 'file_missing'
+  | 'unsupported_format'
+  | 'download_failed'
+  | 'storage_quota'
+  | 'indexeddb_failed';
+
+export type OfflineCacheOutcomeStatus =
+  | 'cached'
+  | 'temporarily_failed'
+  | 'permanently_ineligible'
+  | 'kept_existing_copy';
+
+export interface OfflineCacheOutcome {
+  bookId: number;
+  fileId: number | null;
+  title: string | null;
+  status: OfflineCacheOutcomeStatus;
+  errorCode: OfflineCacheErrorCode | null;
+}
+
 export interface ProgressSyncResponse {
   /** The authoritative state returned by the server, when it has one. */
   progress: ReadingProgress | null;
