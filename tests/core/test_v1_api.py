@@ -71,6 +71,7 @@ def client(tmp_path: Path):
         )
     app = Flask(__name__)
     app.config["TESTING"] = True
+    app.config["V1_TEST_DATABASE"] = str(db_path)
     actor = V1Actor(1)
     register_v1_api(app, database_path=db_path, resolve_actor=lambda: actor)
     return app.test_client()
@@ -116,6 +117,46 @@ def test_trending_only_book_detail_does_not_promote_catalog_visibility(client) -
     after = client.get("/api/v1/catalog/books")
     assert after.status_code == 200
     assert 14 not in {item["id"] for item in after.json["items"]}
+
+
+def test_local_search_includes_hidden_metadata_and_keeps_catalog_unchanged(client) -> None:
+    """Autocomplete is FTS-only and never turns a suggestion into a catalog card."""
+    with sqlite3.connect(client.application.config["V1_TEST_DATABASE"]) as conn:
+        conn.execute(
+            "CREATE VIRTUAL TABLE books_fts USING fts5(book_id UNINDEXED, title, author, isbn_13)"
+        )
+        conn.executemany(
+            "INSERT INTO books_fts(rowid, book_id, title, author, isbn_13) VALUES (?, ?, ?, ?, ?)",
+            [
+                (10, 10, "Dune", "Frank Herbert", "9780441172719"),
+                (13, 13, "Dune Messiah", "Frank Herbert", "9780441172696"),
+                (14, 14, "Dúné Trending", "Other", "9780000000014"),
+            ],
+        )
+        conn.execute(
+            "UPDATE books SET title = 'Dúné Trending', isbn_13 = '9780000000014' WHERE id = 14"
+        )
+
+    response = client.get("/api/v1/search/books?q=Dune&limit=2")
+    assert response.status_code == 200
+    assert response.json["limit"] == 2
+    assert [item["id"] for item in response.json["items"]] == [10, 14]
+
+    hidden = client.get("/api/v1/search/books?q=Trending")
+    assert hidden.status_code == 200
+    assert hidden.json["items"][0]["id"] == 14
+    assert hidden.json["items"][0]["catalog_visible"] is False
+    assert hidden.json["items"][0]["has_imported_file"] is False
+    assert 14 not in {item["id"] for item in client.get("/api/v1/catalog/books").json["items"]}
+
+
+def test_local_search_requires_authentication_and_validates_limit(tmp_path: Path) -> None:
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+    register_v1_api(
+        app, database_path=tmp_path / "unauthenticated.sqlite", resolve_actor=lambda: None
+    )
+    assert app.test_client().get("/api/v1/search/books?q=dune").status_code == 401
 
 
 def test_bulk_add_library_books_is_idempotent_and_reports_partial_results(client) -> None:

@@ -28,6 +28,7 @@ import type {
   V1PushRule,
   V1PatcherManifest,
   V1ReadingProgress,
+  V1SearchBooksResponse,
   V1ReleaseProfile,
   V1ReleaseProfileConfig,
   V1ReleaseProfilePreview,
@@ -168,6 +169,8 @@ const requestV1 = async <T>(path: string, init: RequestInit = {}): Promise<T> =>
 const pageQuery = (offset = 0, limit = 50): string => `?offset=${offset}&limit=${limit}`;
 
 export const v1Api = {
+  searchBooks: (query: string, signal?: AbortSignal): Promise<V1SearchBooksResponse> =>
+    requestV1(`/search/books?q=${encodeURIComponent(query)}&limit=8`, { signal }),
   catalog: (
     options: {
       q?: string;

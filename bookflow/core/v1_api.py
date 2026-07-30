@@ -356,6 +356,7 @@ def register_v1_api(
                 },
                 "/api/v1/catalog/recent": {"get": {"summary": "Recent shared catalog books"}},
                 "/api/v1/catalog/books": {"get": {"summary": "Search shared catalog"}},
+                "/api/v1/search/books": {"get": {"summary": "Autocomplete local books"}},
                 "/api/v1/catalog/books/{bookId}": {
                     "get": {"summary": "View global catalog metadata"}
                 },
@@ -806,6 +807,74 @@ def register_v1_api(
             )
         except (ValueError, CatalogMonitorError) as exc:
             return error("invalid_catalog_query", str(exc), 400)
+
+    @blueprint.get("/search/books")
+    @require_actor()
+    def search_books() -> Response | tuple[Response, int]:
+        """Return a small, local-only cross-catalog autocomplete result set.
+
+        This intentionally does not reuse the catalog endpoint: catalog cards require
+        an imported file, whereas a search result may be metadata or a suggestion.
+        """
+        actor: V1Actor = g.v1_actor
+        query = request.args.get("q", "").strip()
+        if not query:
+            return jsonify({"items": [], "limit": 8})
+        try:
+            limit = min(12, max(1, int(request.args.get("limit", "8"))))
+        except ValueError:
+            return error("invalid_search_query", "limit must be an integer", 400)
+        terms = [token.replace('"', '""') for token in query.split() if token]
+        if not terms:
+            return jsonify({"items": [], "limit": limit})
+        fts_query = " AND ".join(f'"{term}"*' for term in terms)
+        with connect() as conn:
+            has_bestseller_entries = (
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bestseller_entries'"
+                ).fetchone()
+                is not None
+            )
+            trending_sql = (
+                "EXISTS (SELECT 1 FROM bestseller_entries be WHERE be.book_id = b.id)"
+                if has_bestseller_entries
+                else "0"
+            )
+            rows = conn.execute(
+                f"""
+                SELECT b.id, b.title, b.author, b.cover_url, b.publish_year, b.isbn_13,
+                       COALESCE(b.catalog_visible, 1) AS catalog_visible,
+                       EXISTS (SELECT 1 FROM book_files bf WHERE bf.book_id = b.id
+                               AND bf.import_status = 'imported') AS has_imported_file,
+                       EXISTS (SELECT 1 FROM user_library ul WHERE ul.user_id = ?
+                               AND ul.book_id = b.id) AS in_library,
+                       EXISTS (SELECT 1 FROM requests r WHERE r.user_id = ?
+                               AND r.book_id = b.id) AS requested,
+                       {trending_sql} AS is_trending
+                FROM books_fts
+                JOIN books b ON b.id = books_fts.rowid
+                WHERE books_fts MATCH ?
+                ORDER BY bm25(books_fts), b.id
+                LIMIT ?
+                """,  # noqa: S608 - only the constant trending expression is interpolated.
+                (actor.user_id, actor.user_id, fts_query, limit),
+            ).fetchall()
+        return jsonify(
+            {
+                "items": [
+                    {
+                        **dict(row),
+                        "catalog_visible": bool(row["catalog_visible"]),
+                        "has_imported_file": bool(row["has_imported_file"]),
+                        "in_library": bool(row["in_library"]),
+                        "requested": bool(row["requested"]),
+                        "is_trending": bool(row["is_trending"]),
+                    }
+                    for row in rows
+                ],
+                "limit": limit,
+            }
+        )
 
     @blueprint.post("/library/books/bulk")
     @require_actor()

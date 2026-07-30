@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { BookSelectionControl } from '../components/BookSelectionControl';
@@ -40,6 +40,8 @@ export const CatalogPage = () => {
   const [externalError, setExternalError] = useState<string | null>(null);
   const [openingExternalId, setOpeningExternalId] = useState<string | null>(null);
   const q = params.get('q') ?? '';
+  const external = params.get('external') === '1';
+  const externalSearchKey = useRef<string | null>(null);
   const [searchDraft, setSearchDraft] = useState(q);
   const format = params.get('format') ?? '';
   const sort = params.get('sort') ?? 'recent';
@@ -90,7 +92,7 @@ export const CatalogPage = () => {
       },
       { replace: true },
     );
-  const loadExternal = async () => {
+  const loadExternal = useCallback(async () => {
     if (!q.trim()) return;
     setExternalLoading(true);
     setExternalError(null);
@@ -110,7 +112,13 @@ export const CatalogPage = () => {
     } finally {
       setExternalLoading(false);
     }
-  };
+  }, [q, t]);
+  useDependencyEffect(() => {
+    if (external && q.trim() && externalSearchKey.current !== q) {
+      externalSearchKey.current = q;
+      void loadExternal();
+    }
+  }, [external, loadExternal, q]);
   const openExternal = async (book: Book) => {
     if (!book.provider || !book.provider_id) return;
     setOpeningExternalId(book.id);
