@@ -1778,7 +1778,7 @@ def register_v1_api(
                    users.username AS requester_name
             FROM requests
             JOIN books ON books.id = requests.book_id
-            JOIN users ON users.id = requests.user_id
+            LEFT JOIN users ON users.id = requests.user_id
         """
         parameters: tuple[Any, ...] = ()
         if status:

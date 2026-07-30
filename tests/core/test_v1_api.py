@@ -18,7 +18,7 @@ def client(tmp_path: Path):
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
-            CREATE TABLE users (id INTEGER PRIMARY KEY, is_active INTEGER, role TEXT);
+            CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, is_active INTEGER, role TEXT);
             CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT, author TEXT, language TEXT,
                 publish_year INTEGER, cover_url TEXT, isbn_13 TEXT, catalog_visible INTEGER);
             CREATE TABLE book_identifiers (
@@ -49,7 +49,8 @@ def client(tmp_path: Path):
             CREATE TABLE release_candidates (id INTEGER PRIMARY KEY, request_process_id INTEGER, total_score INTEGER);
             CREATE TABLE request_attempts (id INTEGER PRIMARY KEY, request_process_id INTEGER);
             CREATE TABLE blocked_releases (id INTEGER PRIMARY KEY, unblocked_at TEXT);
-            INSERT INTO users VALUES (1, 1, 'user'), (2, 1, 'user'), (3, 1, 'admin');
+            INSERT INTO users VALUES (1, 'reader-one', 1, 'user'),
+                (2, 'reader-two', 1, 'user'), (3, 'admin', 1, 'admin');
             INSERT INTO books VALUES (10, 'Allowed', 'Author', 'en', 2020, NULL, NULL, 1),
                 (11, 'Private', 'Other', 'en', 2021, NULL, NULL, 1),
                 (12, 'Entitled only', 'Other', 'en', 2022, NULL, NULL, 1),
@@ -71,6 +72,7 @@ def client(tmp_path: Path):
         )
     app = Flask(__name__)
     app.config["TESTING"] = True
+    app.config["V1_TEST_DB_PATH"] = db_path
     actor = V1Actor(1)
     register_v1_api(app, database_path=db_path, resolve_actor=lambda: actor)
     return app.test_client()
@@ -116,6 +118,39 @@ def test_trending_only_book_detail_does_not_promote_catalog_visibility(client) -
     after = client.get("/api/v1/catalog/books")
     assert after.status_code == 200
     assert 14 not in {item["id"] for item in after.json["items"]}
+
+
+def test_admin_requester_names_are_complete_and_private(client) -> None:
+    """Only the admin list identifies every requester, including safe orphan fallback."""
+    db_path = client.application.config["V1_TEST_DB_PATH"]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO requests VALUES (52, 2, 10, NULL, 'ebook', 'x', '{}', "
+            "'pending_approval', NULL, 0, '2026-01-02', '2026-01-02')"
+        )
+        # Historic data can outlive a deleted/anonymised user; it must not vanish from admin.
+        conn.execute(
+            "INSERT INTO requests VALUES (53, 99, 10, NULL, 'ebook', 'x', '{}', "
+            "'pending_approval', NULL, 0, '2026-01-03', '2026-01-03')"
+        )
+
+    admin_app = Flask(__name__)
+    admin_app.config["TESTING"] = True
+    register_v1_api(
+        admin_app,
+        database_path=db_path,
+        resolve_actor=lambda: V1Actor(3, is_admin=True),
+    )
+    admin_response = admin_app.test_client().get("/api/v1/admin/requests?limit=100")
+
+    assert admin_response.status_code == 200
+    requester_names = {item["id"]: item["requester_name"] for item in admin_response.json["items"]}
+    assert requester_names[50] == "reader-one"
+    assert requester_names[52] == "reader-two"
+    assert requester_names[53] is None
+
+    # The same non-admin actor cannot obtain the admin-only requester response.
+    assert client.get("/api/v1/admin/requests").status_code == 403
 
 
 def test_bulk_add_library_books_is_idempotent_and_reports_partial_results(client) -> None:
