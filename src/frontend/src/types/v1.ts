@@ -52,6 +52,23 @@ export interface V1CatalogBook {
   created_at?: string | null;
   updated_at?: string | null;
 }
+export interface V1SearchBook {
+  id: number;
+  title: string;
+  author: string | null;
+  cover_url: string | null;
+  publish_year: number | null;
+  isbn_13: string | null;
+  catalog_visible: boolean;
+  has_imported_file: boolean;
+  in_library: boolean;
+  requested: boolean;
+  is_trending: boolean;
+}
+export interface V1SearchBooksResponse {
+  items: V1SearchBook[];
+  limit: number;
+}
 
 export interface V1SuggestionBook extends V1CatalogBook {
   in_library: boolean;

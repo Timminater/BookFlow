@@ -1,11 +1,14 @@
-import { useState, useRef, useMemo, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useRef, useMemo, type FormEvent, type KeyboardEvent } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useLanguage } from '../contexts/LanguageContext';
 import { useDismiss } from '../hooks/useDismiss';
-import { useMountEffect } from '../hooks/useMountEffect';
+import { useDependencyEffect, useMountEffect } from '../hooks/useMountEffect';
+import { contextualBookPath } from '../pages/bookDetailContext';
 import { updateSelfSettings } from '../services/api';
+import { v1Api } from '../services/v1Api';
 import type { ActingAsUserSelection } from '../types';
+import type { V1SearchBook } from '../types/v1';
 import { formatActingAsUserName } from '../utils/actingAsUser';
 import { withBasePath } from '../utils/basePath';
 import { isRecord } from '../utils/objectHelpers';
@@ -67,8 +70,16 @@ export const Header = ({
   onRemoveToast,
 }: HeaderProps) => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { language, setLanguage, t } = useLanguage();
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<V1SearchBook[]>([]);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState(false);
+  const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
+  const searchAbort = useRef<AbortController | null>(null);
+  const searchRef = useRef<HTMLFormElement>(null);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
   const [shouldAnimateIn, setShouldAnimateIn] = useState(false);
@@ -111,6 +122,50 @@ export const Header = ({
     });
   });
 
+  useDependencyEffect(() => {
+    searchAbort.current?.abort();
+    const query = searchQuery.trim();
+    setActiveSearchIndex(-1);
+    setSearchError(false);
+    if (query.length < 2) {
+      setSearchResults([]);
+      setSearchOpen(false);
+      return undefined;
+    }
+    const controller = new AbortController();
+    searchAbort.current = controller;
+    setSearchLoading(true);
+    setSearchOpen(true);
+    const timer = window.setTimeout(() => {
+      void v1Api
+        .searchBooks(query, controller.signal)
+        .then((response) => {
+          if (!controller.signal.aborted) setSearchResults(response.items);
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            setSearchResults([]);
+            setSearchError(true);
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setSearchLoading(false);
+        });
+    }, 200);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [searchQuery]);
+
+  useDependencyEffect(() => {
+    setSearchOpen(false);
+  }, [location.pathname, location.search]);
+
+  useDependencyEffect(() => {
+    if (!searchOpen) setActiveSearchIndex(-1);
+  }, [searchOpen]);
+
   useMountEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const handler = (e: MediaQueryListEvent) => {
@@ -134,6 +189,7 @@ export const Header = ({
   };
 
   useDismiss(isDropdownOpen && !isClosing, [dropdownRef], closeDropdown);
+  useDismiss(searchOpen, [searchRef], () => setSearchOpen(false));
 
   const handleLogout = () => {
     closeDropdown();
@@ -229,6 +285,51 @@ export const Header = ({
     event.preventDefault();
     const query = searchQuery.trim();
     void navigate(query ? `/catalog?q=${encodeURIComponent(query)}` : '/catalog');
+    setSearchOpen(false);
+  };
+  const openSearchResult = (book: V1SearchBook) => {
+    setSearchOpen(false);
+    let context: 'library' | 'trending' | 'catalog' = 'catalog';
+    if (book.in_library) context = 'library';
+    else if (book.is_trending) context = 'trending';
+    void navigate(contextualBookPath(context, book.id));
+  };
+  const searchStatusLabel = (book: V1SearchBook) => {
+    if (book.in_library) return t('search.inLibrary');
+    if (book.catalog_visible && book.has_imported_file) return t('search.catalog');
+    if (book.is_trending) return t('search.trending');
+    return t('search.metadata');
+  };
+  let activeSearchOptionId: string | undefined;
+  if (searchOpen && activeSearchIndex >= 0) {
+    const activeBook = searchResults[activeSearchIndex];
+    if (activeBook) activeSearchOptionId = `global-book-search-result-${activeBook.id}`;
+    else if (activeSearchIndex === searchResults.length) {
+      activeSearchOptionId = 'global-book-search-external';
+    }
+  }
+  const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (!searchOpen) return;
+    const lastIndex = searchResults.length;
+    if (event.key === 'Escape') {
+      setSearchOpen(false);
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      setActiveSearchIndex((current) => {
+        if (current < 0) return direction === 1 ? 0 : lastIndex;
+        return (current + direction + lastIndex + 1) % (lastIndex + 1);
+      });
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      setActiveSearchIndex(event.key === 'Home' ? 0 : lastIndex);
+    } else if (event.key === 'Enter' && activeSearchIndex >= 0) {
+      event.preventDefault();
+      const selected = searchResults[activeSearchIndex];
+      if (selected) openSearchResult(selected);
+      else void navigate(`/catalog?q=${encodeURIComponent(searchQuery.trim())}&external=1`);
+      setSearchOpen(false);
+    }
   };
   const handleLanguageChange = async (nextLanguage: 'en' | 'nl') => {
     setLanguage(nextLanguage);
@@ -477,6 +578,7 @@ export const Header = ({
         <div className="mx-auto max-w-[96rem] px-4 py-3 sm:px-6 lg:px-8">
           <div className="relative flex min-h-[48px] items-center gap-3 pl-11 lg:pl-0 xl:justify-center">
             <form
+              ref={searchRef}
               className="relative min-w-0 flex-1 xl:w-full xl:max-w-2xl xl:flex-none"
               onSubmit={handleCatalogSearch}
             >
@@ -490,10 +592,80 @@ export const Header = ({
                 type="search"
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
+                onFocus={() => searchQuery.trim().length >= 2 && setSearchOpen(true)}
+                onKeyDown={handleSearchKeyDown}
                 placeholder={t('header.search')}
                 aria-label={t('header.searchLabel')}
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={searchOpen}
+                aria-controls="global-book-search-results"
+                aria-activedescendant={activeSearchOptionId}
                 className="w-full rounded-xl border border-(--border-muted) bg-(--bg-soft) py-2.5 pr-4 pl-9 text-sm shadow-sm transition outline-none focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/15"
               />
+              {searchOpen && (
+                <div
+                  id="global-book-search-results"
+                  role="listbox"
+                  className="absolute z-50 mt-2 max-h-[60vh] w-full overflow-y-auto rounded-xl border border-(--border-muted) bg-(--bg) p-1 shadow-xl"
+                >
+                  {searchLoading && (
+                    <p role="status" aria-live="polite" className="px-3 py-2 text-sm">
+                      {t('search.loading')}
+                    </p>
+                  )}
+                  {!searchLoading && searchError && (
+                    <p role="alert" className="px-3 py-2 text-sm">
+                      {t('search.error')}
+                    </p>
+                  )}
+                  {!searchLoading && !searchError && searchResults.length === 0 && (
+                    <p role="status" className="px-3 py-2 text-sm">
+                      {t('search.empty')}
+                    </p>
+                  )}
+                  {searchResults.map((book, index) => (
+                    <button
+                      type="button"
+                      id={`global-book-search-result-${book.id}`}
+                      role="option"
+                      aria-selected={activeSearchIndex === index}
+                      key={book.id}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => openSearchResult(book)}
+                      className="hover-surface flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left"
+                    >
+                      {book.cover_url && (
+                        <img
+                          src={book.cover_url}
+                          alt=""
+                          className="h-12 w-8 shrink-0 rounded object-cover"
+                        />
+                      )}
+                      <span className="min-w-0 flex-1">
+                        <strong className="block truncate">{book.title}</strong>
+                        <small className="block truncate">{book.author}</small>
+                      </span>
+                      <small>{searchStatusLabel(book)}</small>
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    id="global-book-search-external"
+                    role="option"
+                    aria-selected={activeSearchIndex === searchResults.length}
+                    onClick={() => {
+                      setSearchOpen(false);
+                      void navigate(
+                        `/catalog?q=${encodeURIComponent(searchQuery.trim())}&external=1`,
+                      );
+                    }}
+                    className="hover-surface mt-1 w-full rounded-lg px-3 py-2 text-left text-sm font-medium"
+                  >
+                    {t('search.external', { query: searchQuery.trim() })}
+                  </button>
+                </div>
+              )}
             </form>
             <div className="xl:absolute xl:right-0">{iconButtonsNode}</div>
           </div>
