@@ -1,12 +1,13 @@
 import { useCallback, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { useLanguage } from '../contexts/LanguageContext';
 import { useDependencyEffect } from '../hooks/useMountEffect';
 import { v1Api } from '../services/v1Api';
 import type { V1AdminRequest, V1RequestProcess, V1UserRequest } from '../types/v1';
 import { createIdempotencyKey } from '../utils/idempotencyKey';
 import { InteractiveSearchModal } from './InteractiveSearchModal';
-import { canManageRequestProcess } from './requestsPresentation';
+import { canManageRequestProcess, requesterName, requesterSummary } from './requestsPresentation';
 
 interface RequestsPageProps {
   isAdmin: boolean;
@@ -19,6 +20,7 @@ const errorMessage = (caught: unknown): string =>
 
 /** Book-centric request list. Admin actions operate on the shared request process. */
 export const RequestsPage = ({ isAdmin, onShowToast }: RequestsPageProps) => {
+  const { t } = useLanguage();
   const [requests, setRequests] = useState<Array<V1AdminRequest | V1UserRequest>>([]);
   const [requestProcesses, setRequestProcesses] = useState<V1RequestProcess[]>([]);
   const [history, setHistory] = useState(false);
@@ -122,6 +124,9 @@ export const RequestsPage = ({ isAdmin, onShowToast }: RequestsPageProps) => {
           const first = group[0];
           const requestProcess = requestProcessFor(bookId);
           const title = 'book_title' in first ? first.book_title : first.title;
+          const requesterNames = isAdmin
+            ? group.map((request) => ('requester_name' in request ? request.requester_name : null))
+            : [];
           return (
             <article key={bookId} className="mt-5 rounded-xl border border-(--border-muted) p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -138,8 +143,14 @@ export const RequestsPage = ({ isAdmin, onShowToast }: RequestsPageProps) => {
                     <p className="text-sm opacity-65">{first.book_author}</p>
                   )}
                   <p className="mt-1 text-xs opacity-60">
-                    {group.length} requester{group.length === 1 ? '' : 's'} · profile{' '}
-                    {first.profile_name ?? 'Default'}
+                    {isAdmin
+                      ? requesterSummary(requesterNames, {
+                          requestedBy: t('requests.requestedBy'),
+                          requestedByCount: t('requests.requestedByCount'),
+                          unknownRequester: t('requests.unknownRequester'),
+                        })
+                      : `${group.length} requester${group.length === 1 ? '' : 's'}`}{' '}
+                    · profile {first.profile_name ?? 'Default'}
                   </p>
                 </div>
                 <span className="rounded-full bg-(--bg-soft) px-3 py-1 text-xs font-medium">
@@ -225,18 +236,24 @@ export const RequestsPage = ({ isAdmin, onShowToast }: RequestsPageProps) => {
                           );
                         }}
                       >
-                        Cancel request
+                        {t('requests.cancelProcess')}
                       </button>
                     </>
                   )}
               </div>
-              {isAdmin && group.length > 1 && (
-                <ul className="mt-4 border-t border-(--border-muted) pt-3 text-xs opacity-70">
+              {isAdmin && (
+                <ul
+                  aria-label={t('requests.requesterList')}
+                  className="mt-4 border-t border-(--border-muted) pt-3 text-xs opacity-70"
+                >
                   {group.map((request) => (
                     <li key={request.id}>
                       #{request.id}{' '}
-                      {'requester_name' in request ? (request.requester_name ?? 'User') : 'You'} ·{' '}
-                      {request.status} · {request.profile_name ?? 'Default profile'}
+                      {requesterName(
+                        'requester_name' in request ? request.requester_name : null,
+                        t('requests.unknownRequester'),
+                      )}{' '}
+                      · {request.status} · {request.profile_name ?? 'Default profile'}
                     </li>
                   ))}
                 </ul>

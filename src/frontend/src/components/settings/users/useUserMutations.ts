@@ -51,6 +51,8 @@ export const useUserMutations = ({
         email: createForm.email || undefined,
         display_name: createForm.display_name || undefined,
         role: createForm.role || undefined,
+        library_capability: createForm.library_capability,
+        auto_approve_requests: createForm.auto_approve_requests,
       });
       resetCreateForm();
       await fetchUsers({ force: true });
@@ -76,6 +78,7 @@ export const useUserMutations = ({
         display_name: editingUser.display_name,
         is_active: editingUser.is_active,
         library_capability: editingUser.library_capability,
+        auto_approve_requests: editingUser.auto_approve_requests,
         ...(editPassword ? { password: editPassword } : {}),
       });
       onEditSaveSuccess?.();

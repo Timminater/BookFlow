@@ -102,6 +102,7 @@ def _serialize_user(
 ) -> dict[str, Any]:
     """Sanitize and enrich a user payload for API responses."""
     payload = _sanitize_user(user)
+    payload["auto_approve_requests"] = bool(payload.get("auto_approve_requests", False))
     payload["auth_source"] = normalize_auth_source(
         payload.get("auth_source"),
         payload.get("oidc_subject"),
@@ -180,6 +181,7 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
             "email",
             "display_name",
             "library_capability",
+            "auto_approve_requests",
             "is_active",
             "password",
         }
@@ -194,6 +196,7 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
         display_name = (data.get("display_name") or "").strip() or None
         role = data.get("role", "user")
         library_capability = data.get("library_capability", "download-capable")
+        auto_approve_requests = data.get("auto_approve_requests", False)
 
         if auth_mode in {AUTH_SOURCE_PROXY, AUTH_SOURCE_CWA}:
             return jsonify(
@@ -216,6 +219,8 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
             return jsonify({"error": "Role must be 'admin' or 'user'"}), 400
         if library_capability not in ("download-capable", "request-only"):
             return jsonify({"error": "Invalid library_capability"}), 400
+        if not isinstance(auto_approve_requests, bool):
+            return jsonify({"error": "auto_approve_requests must be a boolean"}), 400
 
         # First user is always admin
         existing_users = user_db.list_users()
@@ -236,6 +241,7 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
                 auth_source=AUTH_SOURCE_BUILTIN,
                 role=role,
                 library_capability=library_capability,
+                auto_approve_requests=auto_approve_requests,
             )
         except ValueError:
             return jsonify({"error": "Username already exists"}), 409
@@ -312,6 +318,7 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
             "email",
             "display_name",
             "library_capability",
+            "auto_approve_requests",
             "is_active",
             "password",
         }
@@ -348,6 +355,7 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
             "email",
             "display_name",
             "library_capability",
+            "auto_approve_requests",
             "is_active",
         ):
             if field in data:
@@ -370,6 +378,10 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
             user_fields["username"] = username
         if "is_active" in user_fields and not isinstance(user_fields["is_active"], bool):
             return jsonify({"error": "is_active must be a boolean"}), 400
+        if "auto_approve_requests" in user_fields and not isinstance(
+            user_fields["auto_approve_requests"], bool
+        ):
+            return jsonify({"error": "auto_approve_requests must be a boolean"}), 400
 
         role_changed = "role" in user_fields and user_fields["role"] != user.get("role")
         email_changed = "email" in user_fields and user_fields["email"] != user.get("email")
@@ -428,6 +440,7 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
             "email",
             "display_name",
             "library_capability",
+            "auto_approve_requests",
             "is_active",
         ):
             if field in user_fields and user_fields[field] == user.get(field):

@@ -380,6 +380,16 @@ export const UserCreateCard = ({
       label: option.value === 'admin' ? t('admin.roleAdmin') : t('admin.roleUser'),
     })),
   );
+  const capabilityField: SelectFieldConfig = {
+    type: 'SelectField',
+    key: 'library_capability',
+    label: t('admin.libraryCapability'),
+    value: form.library_capability,
+    options: LIBRARY_CAPABILITY_OPTIONS.map((option) => ({
+      value: option.value,
+      label: option.value === 'request-only' ? t('admin.requestOnly') : t('admin.downloadCapable'),
+    })),
+  };
   const displayNameField = createTextField(
     'display_name',
     t('settings.displayName'),
@@ -414,10 +424,37 @@ export const UserCreateCard = ({
           onChange({ ...form, username: value }),
         )}
         {renderSelectField(roleField, form.role, (value) => onChange({ ...form, role: value }))}
+        {renderSelectField(capabilityField, form.library_capability, (value) =>
+          onChange({
+            ...form,
+            library_capability: value === 'request-only' ? 'request-only' : 'download-capable',
+          }),
+        )}
         {renderTextField(displayNameField, form.display_name, (value) =>
           onChange({ ...form, display_name: value }),
         )}
         {renderTextField(emailField, form.email, (value) => onChange({ ...form, email: value }))}
+        <FieldWrapper
+          field={{
+            type: 'CheckboxField',
+            key: 'auto_approve_requests',
+            label: t('admin.autoApproveRequests'),
+            value: form.auto_approve_requests,
+            description: t('admin.autoApproveRequestsHelp'),
+          }}
+        >
+          <CheckboxField
+            field={{
+              type: 'CheckboxField',
+              key: 'auto_approve_requests',
+              label: t('admin.autoApproveRequests'),
+              value: form.auto_approve_requests,
+              description: t('admin.autoApproveRequestsHelp'),
+            }}
+            value={form.auto_approve_requests}
+            onChange={(value) => onChange({ ...form, auto_approve_requests: value })}
+          />
+        </FieldWrapper>
       </div>
 
       {renderPasswordField(passwordField, form.password, (value) =>
@@ -577,6 +614,27 @@ const UserEditFields = ({
             field={activeField}
             value={user.is_active}
             onChange={(value) => onUserChange({ ...user, is_active: value })}
+          />
+        </FieldWrapper>
+        <FieldWrapper
+          field={{
+            type: 'CheckboxField',
+            key: 'auto_approve_requests',
+            label: t('admin.autoApproveRequests'),
+            value: user.auto_approve_requests,
+            description: t('admin.autoApproveRequestsHelp'),
+          }}
+        >
+          <CheckboxField
+            field={{
+              type: 'CheckboxField',
+              key: 'auto_approve_requests',
+              label: t('admin.autoApproveRequests'),
+              value: user.auto_approve_requests,
+              description: t('admin.autoApproveRequestsHelp'),
+            }}
+            value={user.auto_approve_requests}
+            onChange={(value) => onUserChange({ ...user, auto_approve_requests: value })}
           />
         </FieldWrapper>
       </div>
