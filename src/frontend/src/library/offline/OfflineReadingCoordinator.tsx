@@ -72,18 +72,26 @@ const failureFingerprint = (accountId: string, outcome: OfflineCacheOutcome): st
   `${accountId}:${outcome.bookId}:${outcome.fileId ?? 'none'}:${outcome.errorCode ?? 'none'}`;
 
 /**
- * Only surface a retryable failure when its safe diagnostic fingerprint is new.
- * The returned set deliberately drops recovered, replaced, and ineligible entries.
+ * Keep current failure state separate from notification de-duplication.
+ * The returned fingerprint set deliberately drops recovered, replaced, and
+ * ineligible entries so a later recurrence can be reported as a new cycle.
  */
 export const reconcileOfflineFailureFingerprints = (
   accountId: string,
   outcomes: OfflineCacheOutcome[],
   previous: ReadonlySet<string>,
-): { failures: OfflineCacheOutcome[]; fingerprints: Set<string> } => {
+): {
+  failures: OfflineCacheOutcome[];
+  newFailures: OfflineCacheOutcome[];
+  fingerprints: Set<string>;
+} => {
   const retryable = outcomes.filter((outcome) => outcome.status === 'temporarily_failed');
   const fingerprints = new Set(retryable.map((outcome) => failureFingerprint(accountId, outcome)));
   return {
-    failures: retryable.filter((outcome) => !previous.has(failureFingerprint(accountId, outcome))),
+    failures: retryable,
+    newFailures: retryable.filter(
+      (outcome) => !previous.has(failureFingerprint(accountId, outcome)),
+    ),
     fingerprints,
   };
 };
@@ -252,6 +260,10 @@ export const syncOfflineContinueReading = async (
 
 type OfflineCacheStatus = 'loading' | 'syncing' | 'ready' | 'error';
 
+export const offlineCacheStatusFromFailures = (
+  failures: readonly OfflineCacheOutcome[],
+): OfflineCacheStatus => (failures.length ? 'error' : 'ready');
+
 interface OfflineReadingContextValue {
   books: OfflineBook[];
   cachedFileIds: ReadonlySet<number>;
@@ -275,17 +287,17 @@ const OfflineReadingContext = createContext<OfflineReadingContextValue>({
 export const useOfflineReading = (): OfflineReadingContextValue =>
   useContext(OfflineReadingContext);
 
-const visibleRetryableFailures = (
+const reconcileStoredFailureState = (
   accountId: string,
   outcomes: OfflineCacheOutcome[],
-): OfflineCacheOutcome[] => {
+): ReturnType<typeof reconcileOfflineFailureFingerprints> => {
   const reconciled = reconcileOfflineFailureFingerprints(
     accountId,
     outcomes,
     readFailureFingerprints(accountId),
   );
   saveFailureFingerprints(accountId, reconciled.fingerprints);
-  return reconciled.failures;
+  return reconciled;
 };
 
 export const OfflineReadingProvider = ({
@@ -345,10 +357,13 @@ export const OfflineReadingProvider = ({
         const result = await syncOfflineContinueReading(accountId);
         if (cancelled) return;
         setBooks(result.books);
-        const retryableFailures = visibleRetryableFailures(accountId, result.outcomes);
+        const { failures: retryableFailures } = reconcileStoredFailureState(
+          accountId,
+          result.outcomes,
+        );
         setFailures(retryableFailures);
         setFailedBookCount(retryableFailures.length);
-        setStatus(retryableFailures.length ? 'error' : 'ready');
+        setStatus(offlineCacheStatusFromFailures(retryableFailures));
       } catch {
         if (!cancelled) {
           setFailedBookCount(0);
@@ -374,11 +389,11 @@ export const OfflineReadingProvider = ({
     if (!isOnline) return;
     setStatus('syncing');
     const result = await syncOfflineContinueReading(accountId);
-    const retryableFailures = visibleRetryableFailures(accountId, result.outcomes);
+    const { failures: retryableFailures } = reconcileStoredFailureState(accountId, result.outcomes);
     setBooks(result.books);
     setFailures(retryableFailures);
     setFailedBookCount(retryableFailures.length);
-    setStatus(retryableFailures.length ? 'error' : 'ready');
+    setStatus(offlineCacheStatusFromFailures(retryableFailures));
   }, [accountId, isOnline]);
 
   const value = useMemo(

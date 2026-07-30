@@ -10,6 +10,7 @@ import {
 import {
   selectOfflineReadingCandidates,
   reconcileOfflineFailureFingerprints,
+  offlineCacheStatusFromFailures,
   syncOfflineContinueReading,
 } from '../library/offline/OfflineReadingCoordinator';
 import type { V1BookDetail, V1ReadingProgress } from '../types/v1';
@@ -91,7 +92,7 @@ const partialFailureFetcher: ContentFetcher = async (input) => {
 };
 
 describe('offline PWA flow', () => {
-  it('only surfaces a retryable failure once and clears its fingerprint after a successful retry', () => {
+  it('keeps an unresolved failure visible across syncs while deduplicating its notification', () => {
     const failure = {
       bookId: 2,
       fileId: 2,
@@ -108,7 +109,14 @@ describe('offline PWA flow', () => {
     );
 
     expect(first.failures).toEqual([failure]);
-    expect(repeated.failures).toEqual([]);
+    expect(first.newFailures).toEqual([failure]);
+    expect(repeated.failures).toEqual([failure]);
+    expect(repeated.newFailures).toEqual([]);
+    expect(offlineCacheStatusFromFailures(repeated.failures)).toBe('error');
+    expect(repeated.failures.length).toBe(1);
+    expect(recovered.failures).toEqual([]);
+    expect(recovered.newFailures).toEqual([]);
+    expect(offlineCacheStatusFromFailures(recovered.failures)).toBe('ready');
     expect(recovered.fingerprints).toEqual(new Set());
   });
 
