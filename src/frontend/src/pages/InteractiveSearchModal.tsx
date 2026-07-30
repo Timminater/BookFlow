@@ -5,14 +5,17 @@ import { useDependencyEffect } from '../hooks/useMountEffect';
 import { v1Api } from '../services/v1Api';
 import type { V1Attempt, V1Candidate, V1RequestProcess, V1RequestSearchRun } from '../types/v1';
 import {
-  formatBytes,
+  filterInteractiveCandidates,
   sortInteractiveCandidates,
+  toInteractiveCandidate,
   type InteractiveSearchSort,
 } from './interactiveSearchModel';
 
 interface InteractiveSearchModalProps {
   requestProcess: V1RequestProcess;
   title: string;
+  author?: string | null;
+  profile?: string | null;
   onClose: () => void;
   onShowToast: (message: string, type: 'success' | 'error' | 'info') => void;
   onChanged: () => Promise<void>;
@@ -23,8 +26,8 @@ const isRejected = (candidate: V1Candidate): boolean =>
   candidate.accepted !== 1 || candidate.blocked === 1;
 const toInteractiveSearchSort = (value: string): InteractiveSearchSort =>
   value === 'title' || value === 'seeders' || value === 'size' ? value : 'score';
-const errorMessage = (caught: unknown): string =>
-  caught instanceof Error ? caught.message : 'Search failed.';
+const errorMessage = (caught: unknown, fallback: string): string =>
+  caught instanceof Error ? caught.message : fallback;
 const runErrors = (run: V1RequestSearchRun | null): string[] => {
   if (!run?.errors_json) return [];
   try {
@@ -41,6 +44,8 @@ const runErrors = (run: V1RequestSearchRun | null): string[] => {
 export const InteractiveSearchModal = ({
   requestProcess,
   title,
+  author,
+  profile,
   onClose,
   onShowToast,
   onChanged,
@@ -50,6 +55,9 @@ export const InteractiveSearchModal = ({
   const [attempts, setAttempts] = useState<V1Attempt[]>([]);
   const [searchRun, setSearchRun] = useState<V1RequestSearchRun | null>(null);
   const [sort, setSort] = useState<InteractiveSearchSort>('score');
+  const [source, setSource] = useState('all');
+  const [format, setFormat] = useState('all');
+  const [language, setLanguage] = useState('all');
   const [searching, setSearching] = useState(true);
   const [loadingResults, setLoadingResults] = useState(false);
   const [showAttempts, setShowAttempts] = useState(false);
@@ -89,13 +97,13 @@ export const InteractiveSearchModal = ({
         setError(null);
         return runResponse.search_run;
       } catch (caught) {
-        if (mounted.current) setError(errorMessage(caught));
+        if (mounted.current) setError(errorMessage(caught, t('interactiveSearch.failed')));
         return null;
       } finally {
         if (mounted.current) setLoadingResults(false);
       }
     },
-    [requestProcess.id],
+    [requestProcess.id, t],
   );
 
   const startSearch = useCallback(async () => {
@@ -112,11 +120,11 @@ export const InteractiveSearchModal = ({
       await refreshRun(response.search_run.id);
     } catch (caught) {
       if (mounted.current) {
-        setError(errorMessage(caught));
+        setError(errorMessage(caught, t('interactiveSearch.failed')));
         setSearching(false);
       }
     }
-  }, [refreshRun, requestProcess.id]);
+  }, [refreshRun, requestProcess.id, t]);
   useDependencyEffect(() => {
     void startSearch();
   }, [startSearch]);
@@ -125,12 +133,12 @@ export const InteractiveSearchModal = ({
     pollCount.current += 1;
     if (pollCount.current > 80) {
       setSearching(false);
-      setError('The search is taking longer than expected. Refresh to keep checking this run.');
+      setError(t('interactiveSearch.timeout'));
       return;
     }
     clearPoll();
     pollTimer.current = setTimeout(() => void refreshRun(searchRun.id), 750);
-  }, [refreshRun, searchRun]);
+  }, [refreshRun, searchRun, t]);
 
   const grab = async (candidate: V1Candidate) => {
     const force = isRejected(candidate);
@@ -138,69 +146,159 @@ export const InteractiveSearchModal = ({
     if (force) {
       if (
         // oxlint-disable-next-line no-alert -- a forced profile override needs deliberate admin confirmation.
-        !window.confirm(
-          'This release was rejected by the active profile or blocklist. Force the grab anyway?',
-        )
+        !window.confirm(t('interactiveSearch.forceConfirm'))
       )
         return;
       // oxlint-disable-next-line no-alert -- the backend persists this reason in the override audit.
-      reason = window.prompt('Required audit reason for this override')?.trim();
+      reason = window.prompt(t('interactiveSearch.auditReason'))?.trim();
       if (!reason) return;
     }
     try {
       await v1Api.selectCandidate(candidate.id, force, reason);
       onShowToast(
-        force ? 'Release force-grabbed and audit recorded' : 'Release queued for download',
+        force ? t('interactiveSearch.forceSuccess') : t('interactiveSearch.grabSuccess'),
         'success',
       );
       await Promise.all([searchRun ? refreshRun(searchRun.id) : Promise.resolve(), onChanged()]);
     } catch (caught) {
-      setError(errorMessage(caught));
+      setError(errorMessage(caught, t('interactiveSearch.failed')));
     }
   };
 
-  const ordered = useMemo(() => sortInteractiveCandidates(candidates, sort), [candidates, sort]);
+  const presented = useMemo(
+    () => sortInteractiveCandidates(candidates, sort).map(toInteractiveCandidate),
+    [candidates, sort],
+  );
+  const sources = useMemo(
+    () => [...new Set(presented.map((candidate) => candidate.source))],
+    [presented],
+  );
+  const formats = useMemo(
+    () => [...new Set(presented.map((candidate) => candidate.format))],
+    [presented],
+  );
+  const languages = useMemo(
+    () => [...new Set(presented.map((candidate) => candidate.language))],
+    [presented],
+  );
+  const ordered = useMemo(
+    () => filterInteractiveCandidates(presented, source, format, language),
+    [presented, source, format, language],
+  );
   const errors = runErrors(searchRun);
+  const sourceCount = (item: string): number =>
+    item === 'all'
+      ? presented.length
+      : presented.filter((candidate) => candidate.source === item).length;
+  const decisionLabel = (decision: 'eligible' | 'rejected' | 'blocked'): string => {
+    if (decision === 'eligible') return `✓ ${t('interactiveSearch.eligible')}`;
+    if (decision === 'blocked') return `⛔ ${t('interactiveSearch.blocked')}`;
+    return `⚠ ${t('interactiveSearch.rejected')}`;
+  };
+  const actionLabel = (candidate: V1Candidate): string => {
+    if (candidate.selected_by_admin === 1) return t('interactiveSearch.selected');
+    return isRejected(candidate)
+      ? t('interactiveSearch.grabOverride')
+      : t('interactiveSearch.grab');
+  };
+  const controlClass = 'min-h-11 rounded-md border border-(--border-muted) bg-(--bg) px-3 text-sm';
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-3 pt-8 sm:p-6"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-0 sm:p-6"
       role="dialog"
       aria-modal="true"
       aria-labelledby="interactive-search-heading"
     >
-      <section className="w-full max-w-7xl rounded-2xl bg-(--bg) shadow-2xl">
-        <header className="flex flex-wrap items-start justify-between gap-4 border-b border-(--border-muted) p-5">
-          <div>
-            <p className="text-xs font-semibold tracking-widest text-violet-600 uppercase dark:text-violet-300">
-              {t('interactiveSearch.title')}
-            </p>
-            <h2 id="interactive-search-heading" className="mt-1 text-xl font-semibold">
-              {title}
-            </h2>
-            <p className="mt-1 text-sm opacity-65">{t('interactiveSearch.freshSearch')}</p>
+      <section className="min-h-full w-full max-w-6xl bg-(--bg) shadow-2xl sm:min-h-0 sm:rounded-2xl">
+        <header className="flex items-start justify-between gap-4 border-b border-(--border-muted) p-5">
+          <div className="flex min-w-0 items-center gap-4">
+            <div
+              className="flex h-24 w-16 shrink-0 items-center justify-center rounded-lg bg-linear-to-br from-violet-500/25 to-fuchsia-500/10 px-2 text-center text-[10px] font-semibold uppercase"
+              aria-label={t('interactiveSearch.noCover')}
+            >
+              {t('interactiveSearch.noCover')}
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-semibold tracking-widest text-violet-600 uppercase dark:text-violet-300">
+                {t('interactiveSearch.title')}
+              </p>
+              <h2 id="interactive-search-heading" className="mt-1 truncate text-2xl font-semibold">
+                {title}
+              </h2>
+              {author && <p className="mt-1 text-sm opacity-70">{author}</p>}
+              <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                <span className="rounded-full bg-(--bg-soft) px-2.5 py-1">
+                  {t('interactiveSearch.profile')}:{' '}
+                  {profile ?? t('interactiveSearch.defaultProfile')}
+                </span>
+                <span className="rounded-full bg-(--bg-soft) px-2.5 py-1">
+                  {searchRun?.status ?? t('interactiveSearch.starting')} · {candidates.length}
+                </span>
+              </div>
+            </div>
           </div>
           <button
             type="button"
-            className="rounded-full p-2 text-xl hover:bg-(--hover-surface)"
+            className="min-h-11 min-w-11 rounded-full text-xl hover:bg-(--hover-surface)"
             onClick={onClose}
             aria-label={t('interactiveSearch.close')}
           >
             ×
           </button>
         </header>
+        <div
+          className="flex gap-1 overflow-x-auto border-b border-(--border-muted) px-4 pt-2"
+          role="tablist"
+          aria-label={t('interactiveSearch.sources')}
+        >
+          {['all', ...sources].map((item) => (
+            <button
+              key={item}
+              type="button"
+              role="tab"
+              aria-selected={source === item}
+              className={`min-h-11 shrink-0 border-b-2 px-4 text-sm font-medium ${source === item ? 'border-violet-500 text-violet-600 dark:text-violet-300' : 'border-transparent opacity-65'}`}
+              onClick={() => setSource(item)}
+            >
+              {item === 'all' ? t('interactiveSearch.allSources') : item} ({sourceCount(item)})
+            </button>
+          ))}
+        </div>
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-(--border-muted) px-5 py-3">
           <p className="text-sm">
             {searching
               ? t('interactiveSearch.searching')
-              : t('interactiveSearch.results', { count: candidates.length })}
-            {searchRun ? ` · ${searchRun.status} · ${searchRun.candidate_count}` : ''}
+              : t('interactiveSearch.results', { count: ordered.length })}
+            {searchRun ? ` · ${searchRun.status}` : ''}
           </p>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <select
+              aria-label={t('interactiveSearch.filterFormat')}
+              value={format}
+              onChange={(event) => setFormat(event.target.value)}
+              className={controlClass}
+            >
+              <option value="all">{t('interactiveSearch.allFormats')}</option>
+              {formats.map((item) => (
+                <option key={item}>{item}</option>
+              ))}
+            </select>
+            <select
+              aria-label={t('interactiveSearch.filterLanguage')}
+              value={language}
+              onChange={(event) => setLanguage(event.target.value)}
+              className={controlClass}
+            >
+              <option value="all">{t('interactiveSearch.allLanguages')}</option>
+              {languages.map((item) => (
+                <option key={item}>{item}</option>
+              ))}
+            </select>
             <select
               aria-label={t('interactiveSearch.sort')}
               value={sort}
               onChange={(event) => setSort(toInteractiveSearchSort(event.target.value))}
-              className="rounded-md border border-(--border-muted) bg-transparent px-3 py-2 text-sm"
+              className={controlClass}
             >
               <option value="score">{t('interactiveSearch.sortScore')}</option>
               <option value="seeders">{t('interactiveSearch.sortPeers')}</option>
@@ -209,7 +307,7 @@ export const InteractiveSearchModal = ({
             </select>
             <button
               type="button"
-              className="rounded-md border border-(--border-muted) px-3 py-2 text-sm"
+              className={controlClass}
               disabled={searching || loadingResults}
               onClick={() => void startSearch()}
             >
@@ -217,7 +315,7 @@ export const InteractiveSearchModal = ({
             </button>
             <button
               type="button"
-              className="rounded-md border border-(--border-muted) px-3 py-2 text-sm"
+              className={controlClass}
               disabled={loadingResults || !searchRun}
               onClick={() => searchRun && void refreshRun(searchRun.id)}
             >
@@ -235,63 +333,56 @@ export const InteractiveSearchModal = ({
             {errors.join(' · ')}
           </p>
         )}
-        <div className="overflow-x-auto p-5">
-          <table className="w-full min-w-[960px] text-left text-sm">
-            <thead className="border-b border-(--border-muted) text-xs tracking-wide uppercase opacity-60">
-              <tr>
-                <th className="px-2 py-3">{t('interactiveSearch.release')}</th>
-                <th className="px-2 py-3">{t('interactiveSearch.source')}</th>
-                <th className="px-2 py-3">{t('interactiveSearch.protocol')}</th>
-                <th className="px-2 py-3">{t('interactiveSearch.size')}</th>
-                <th className="px-2 py-3">{t('interactiveSearch.peers')}</th>
-                <th className="px-2 py-3">{t('interactiveSearch.languageFormat')}</th>
-                <th className="px-2 py-3">{t('interactiveSearch.score')}</th>
-                <th className="px-2 py-3">{t('interactiveSearch.decision')}</th>
-                <th className="px-2 py-3">{t('interactiveSearch.action')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ordered.map((candidate) => (
-                <tr key={candidate.id} className="border-b border-(--border-muted)/70 align-top">
-                  <td className="max-w-sm px-2 py-3 font-medium">
-                    {candidate.title ?? `#${candidate.id}`}
-                  </td>
-                  <td className="px-2 py-3">
-                    {candidate.source ?? '—'}
-                    {candidate.indexer ? ` / ${candidate.indexer}` : ''}
-                  </td>
-                  <td className="px-2 py-3">{candidate.protocol ?? '—'}</td>
-                  <td className="px-2 py-3">{formatBytes(candidate.size_bytes)}</td>
-                  <td className="px-2 py-3">
-                    {candidate.seeders ?? 0} / {candidate.peers ?? 0}
-                  </td>
-                  <td className="px-2 py-3">
-                    {candidate.language ?? '—'} / {candidate.file_format?.toUpperCase() ?? '—'}
-                  </td>
-                  <td className="px-2 py-3 font-semibold">{candidate.total_score}</td>
-                  <td
-                    className={`max-w-xs px-2 py-3 ${isRejected(candidate) ? 'text-amber-700 dark:text-amber-300' : 'text-emerald-700 dark:text-emerald-300'}`}
-                  >
-                    {isRejected(candidate)
-                      ? candidate.reject_reasons?.join(', ') ||
-                        (candidate.blocked === 1 ? 'Blocked' : 'Rejected by profile')
-                      : t('interactiveSearch.eligible')}
-                  </td>
-                  <td className="px-2 py-3">
-                    <button
-                      type="button"
-                      className="rounded bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white"
-                      onClick={() => void grab(candidate)}
-                    >
-                      {isRejected(candidate)
-                        ? t('interactiveSearch.grabOverride')
-                        : t('interactiveSearch.grab')}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-3 p-3 sm:p-5">
+          {ordered.map((item) => (
+            <article
+              key={item.id}
+              className="grid gap-3 rounded-xl border border-(--border-muted) p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+            >
+              <div className="min-w-0">
+                <h3 className="font-semibold break-words">{item.title}</h3>
+                <p className="mt-1 text-xs opacity-65">
+                  {item.source}
+                  {item.indexer ? ` · ${item.indexer}` : ''} · {item.protocol}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-lg bg-blue-500/15 px-2 py-1 font-semibold">
+                    {item.language}
+                  </span>
+                  <span className="rounded-lg bg-emerald-500/15 px-2 py-1 font-semibold">
+                    {item.format}
+                  </span>
+                  <span className="rounded-lg bg-(--bg-soft) px-2 py-1">{item.size}</span>
+                  <span className="rounded-lg bg-(--bg-soft) px-2 py-1">
+                    {item.seeders} / {item.peers} {t('interactiveSearch.peers')}
+                  </span>
+                  <span className="rounded-lg bg-violet-500/15 px-2 py-1 font-semibold">
+                    {t('interactiveSearch.score')} {item.score}
+                  </span>
+                </div>
+                <p
+                  className={`mt-3 text-sm font-medium ${item.decision === 'eligible' ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'}`}
+                >
+                  {decisionLabel(item.decision)}
+                </p>
+                {item.rejectReasons.length > 0 && (
+                  <ul className="mt-1 list-disc pl-5 text-xs opacity-75">
+                    {item.rejectReasons.map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <button
+                type="button"
+                className="min-h-11 w-full rounded-lg bg-violet-600 px-4 text-sm font-semibold text-white disabled:opacity-50 sm:w-auto"
+                onClick={() => void grab(item.candidate)}
+                disabled={item.selected}
+              >
+                {actionLabel(item.candidate)}
+              </button>
+            </article>
+          ))}
           {!searching && ordered.length === 0 && (
             <p className="py-8 text-center text-sm opacity-65">
               {t('interactiveSearch.noResults')}
@@ -301,7 +392,8 @@ export const InteractiveSearchModal = ({
         <footer className="border-t border-(--border-muted) px-5 py-4">
           <button
             type="button"
-            className="text-sm font-medium underline"
+            className="min-h-11 text-sm font-medium underline"
+            aria-expanded={showAttempts}
             onClick={() => setShowAttempts((current) => !current)}
           >
             {showAttempts
