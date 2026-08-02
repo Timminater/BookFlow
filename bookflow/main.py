@@ -1417,7 +1417,7 @@ def set_security_headers(response: Response) -> Response:
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault(
         "Content-Security-Policy",
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' blob:; "
         "img-src 'self' data: blob:; connect-src 'self' ws: wss:; "
         "worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'",
     )
