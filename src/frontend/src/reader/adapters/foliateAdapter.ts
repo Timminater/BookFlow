@@ -23,10 +23,15 @@ type FoliateTocItem = {
 type FoliateTransformDetail = {
   data: unknown;
   name?: string;
+  type?: unknown;
 };
 
 type FoliateView = HTMLElement & {
   book?: {
+    rendition?: {
+      layout?: string;
+    };
+    sections?: Array<{ id?: string }>;
     toc?: FoliateTocItem[];
     transformTarget?: EventTarget;
   };
@@ -43,7 +48,52 @@ type FoliateView = HTMLElement & {
   next: () => Promise<void>;
   prev: () => Promise<void>;
   goTo: (target: string | { fraction: number }) => Promise<unknown>;
+  getCFI?: (index: number) => string;
   lastLocation?: FoliateLocation;
+};
+
+const fixedLayoutFallbackCss = `
+  html, body {
+    box-sizing: border-box !important;
+    width: 100% !important;
+    height: 100% !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+  }
+  body {
+    display: grid !important;
+    place-items: center !important;
+  }
+  img, svg, video {
+    display: block !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+    width: auto !important;
+    height: auto !important;
+    object-fit: contain !important;
+  }
+`;
+
+const optionalResourceType = (type: string, isSpineResource: boolean): boolean =>
+  type.startsWith('audio/') ||
+  type.startsWith('font/') ||
+  (type.startsWith('image/') && (type !== 'image/svg+xml' || !isSpineResource)) ||
+  type.startsWith('video/') ||
+  [
+    'application/font-sfnt',
+    'application/font-woff',
+    'application/vnd.ms-fontobject',
+    'application/x-font-opentype',
+    'application/x-font-ttf',
+  ].includes(type);
+
+const resourceType = async (value: unknown): Promise<string> => {
+  try {
+    const resolved = await Promise.resolve(value);
+    return typeof resolved === 'string' ? resolved.split(';', 1)[0].trim().toLowerCase() : '';
+  } catch {
+    return '';
+  }
 };
 
 const fileName = (file: ReaderFile): string => {
@@ -101,8 +151,10 @@ class FoliateAdapter implements ReaderAdapter {
   private view: FoliateView | null = null;
   private locator: ReaderLocator | null = null;
   private listeners = new Set<(locator: ReaderLocator) => void>();
+  private errorListeners = new Set<(error: Error) => void>();
   private relocateHandler: EventListener | null = null;
   private transformHandler: EventListener | null = null;
+  private resourceError: Error | null = null;
 
   constructor(kind: ReaderAdapter['kind']) {
     this.kind = kind;
@@ -132,31 +184,77 @@ class FoliateAdapter implements ReaderAdapter {
     view.addEventListener('relocate', this.relocateHandler);
     container.replaceChildren(view);
     this.view = view;
-    await view.open(source);
+    try {
+      await view.open(source);
 
-    // EPUB resources are transformed lazily. A single malformed optional
-    // asset must not prevent the whole section from becoming readable.
-    // This mirrors foliate-js' own reader integration.
-    // CustomEvent.detail is part of foliate's public transform event contract.
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-    this.transformHandler = ((event: CustomEvent<FoliateTransformDetail>) => {
-      const detail = event.detail;
-      detail.data = Promise.resolve(detail.data).catch((caught: unknown) => {
-        console.warn(`Failed to load EPUB resource ${detail.name ?? 'unknown'}`, caught);
-        return '';
-      });
-    }) as EventListener;
-    view.book?.transformTarget?.addEventListener('data', this.transformHandler);
+      // EPUB resources are transformed lazily. Degrade optional assets without
+      // hiding required document failures. Fixed-layout publications also need
+      // a safe fit-to-page stylesheet when their authored CSS cannot be loaded.
+      // CustomEvent.detail is part of foliate's public transform event contract.
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+      this.transformHandler = ((event: CustomEvent<FoliateTransformDetail>) => {
+        const detail = event.detail;
+        const name = detail.name ?? 'unknown';
+        detail.data = Promise.resolve(detail.data).catch(async (caught: unknown) => {
+          const type = await resourceType(detail.type);
+          const context = `EPUB resource ${name} (${type || 'unknown type'}, file ${file.fileId})`;
+          if (type === 'text/css') {
+            console.warn(`Failed to load ${context}; using reader fallback styles.`, caught);
+            return view.book?.rendition?.layout === 'pre-paginated' ? fixedLayoutFallbackCss : '';
+          }
+          const isSpineResource = Boolean(
+            view.book?.sections?.some((section) => section.id === name),
+          );
+          if (optionalResourceType(type, isSpineResource)) {
+            console.warn(`Failed to load optional ${context}; continuing without it.`, caught);
+            return '';
+          }
+          const error = new Error(`Required ${context} could not be loaded.`, { cause: caught });
+          this.resourceError = error;
+          this.errorListeners.forEach((listener) => listener(error));
+          throw error;
+        });
+      }) as EventListener;
+      view.book?.transformTarget?.addEventListener('data', this.transformHandler);
 
-    // Foliate's reference reader starts the first section without awaiting
-    // the iframe load. Awaiting View.init() can hang the complete React reader
-    // when Chromium delivers a ResizeObserver callback during iframe navigation.
-    const firstRender = view.renderer?.next?.();
-    if (firstRender) {
-      await firstRender.catch((caught: unknown) => {
-        console.warn('Failed to render the first EPUB section', caught);
-      });
+      // Foliate's reference reader starts the first section without awaiting
+      // the iframe load. Awaiting View.init() can hang the complete React reader
+      // when Chromium delivers a ResizeObserver callback during iframe navigation.
+      const firstRender = view.renderer?.next?.();
+      if (firstRender) {
+        try {
+          await this.navigateWithResourceErrors(() => firstRender);
+        } catch (caught: unknown) {
+          throw new Error('The first EPUB section could not be rendered.', { cause: caught });
+        }
+      }
+    } catch (caught: unknown) {
+      this.close();
+      throw caught;
     }
+  }
+
+  private async navigateWithResourceErrors<T>(action: () => Promise<T>): Promise<T> {
+    this.resourceError = null;
+    let result: T;
+    try {
+      result = await action();
+    } catch (caught: unknown) {
+      const error = this.takeResourceError();
+      throw (
+        error ??
+        (caught instanceof Error ? caught : new Error('EPUB navigation failed.', { cause: caught }))
+      );
+    }
+    const error = this.takeResourceError();
+    if (error) throw error;
+    return result;
+  }
+
+  private takeResourceError(): Error | null {
+    const error = this.resourceError;
+    this.resourceError = null;
+    return error;
   }
 
   close(): void {
@@ -171,27 +269,52 @@ class FoliateAdapter implements ReaderAdapter {
     this.view = null;
     this.relocateHandler = null;
     this.transformHandler = null;
+    this.resourceError = null;
     this.listeners.clear();
+    this.errorListeners.clear();
   }
 
-  next(): Promise<void> | void {
-    return this.view?.next();
+  async next(): Promise<void> {
+    const view = this.view;
+    if (view) await this.navigateWithResourceErrors(() => view.next());
   }
 
-  previous(): Promise<void> | void {
-    return this.view?.prev();
+  async previous(): Promise<void> {
+    const view = this.view;
+    if (view) await this.navigateWithResourceErrors(() => view.prev());
   }
 
   async goTo(locator: string): Promise<void> {
-    if (!this.view) return;
+    const view = this.view;
+    if (!view) return;
+    let resolved: unknown;
     if (locator.startsWith('fraction:')) {
       const fraction = Number(locator.slice('fraction:'.length));
       if (Number.isFinite(fraction)) {
-        await this.view.goTo({ fraction });
-        return;
+        resolved = await this.navigateWithResourceErrors(() => view.goTo({ fraction }));
+      } else {
+        resolved = await this.navigateWithResourceErrors(() => view.goTo(locator));
       }
+    } else {
+      resolved = await this.navigateWithResourceErrors(() => view.goTo(locator));
     }
-    await this.view.goTo(locator);
+    this.publishFixedLayoutTarget(view, resolved);
+  }
+
+  private publishFixedLayoutTarget(view: FoliateView, resolved: unknown): void {
+    if (view.book?.rendition?.layout !== 'pre-paginated' || !resolved) return;
+    const index = (resolved as { index?: unknown }).index;
+    const totalPages = view.book.sections?.length ?? 0;
+    if (typeof index !== 'number' || totalPages < 1) return;
+    const currentPage = Math.max(1, Math.min(totalPages, index + 1));
+    const locator: ReaderLocator = {
+      value: view.getCFI?.(index) ?? `fraction:${currentPage / totalPages}`,
+      progression: currentPage / totalPages,
+      currentPage,
+      totalPages,
+    };
+    this.locator = locator;
+    this.listeners.forEach((listener) => listener(locator));
   }
 
   setPreferences(preferences: ReaderPreferences): void {
@@ -213,6 +336,11 @@ class FoliateAdapter implements ReaderAdapter {
   subscribe(listener: (locator: ReaderLocator) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  subscribeErrors(listener: (error: Error) => void): () => void {
+    this.errorListeners.add(listener);
+    return () => this.errorListeners.delete(listener);
   }
 }
 

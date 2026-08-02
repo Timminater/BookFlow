@@ -67,4 +67,5 @@ export interface ReaderAdapter {
   getLocator(): ReaderLocator | null;
   getToc(): ReaderTocItem[];
   subscribe(listener: (locator: ReaderLocator) => void): () => void;
+  subscribeErrors?(listener: (error: Error) => void): () => void;
 }

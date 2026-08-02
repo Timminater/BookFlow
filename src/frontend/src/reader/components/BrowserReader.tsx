@@ -70,21 +70,33 @@ export const BrowserReader = ({
     [onProgressChange],
   );
 
-  const navigate = useCallback((direction: 'previous' | 'next') => {
-    const adapter = adapterRef.current;
-    if (!adapter) return;
-    if (direction === 'previous') {
-      void adapter.previous();
-    } else {
-      void adapter.next();
-    }
+  const reportReaderError = useCallback((caught: unknown) => {
+    setError(caught instanceof Error ? caught.message : 'The book could not be displayed.');
+    setLoading(false);
   }, []);
+
+  const runReaderAction = useCallback(
+    (action: () => Promise<void> | void) => {
+      void Promise.resolve().then(action).catch(reportReaderError);
+    },
+    [reportReaderError],
+  );
+
+  const navigate = useCallback(
+    (direction: 'previous' | 'next') => {
+      const adapter = adapterRef.current;
+      if (!adapter) return;
+      runReaderAction(() => (direction === 'previous' ? adapter.previous() : adapter.next()));
+    },
+    [runReaderAction],
+  );
 
   useDependencyEffect(() => {
     const container = viewportRef.current;
     if (!container) return undefined;
     let disposed = false;
     let unsubscribe: (() => void) | null = null;
+    let unsubscribeErrors: (() => void) | null = null;
     setLoading(true);
     setError(null);
     void adapterFactory(file)
@@ -104,6 +116,7 @@ export const BrowserReader = ({
           onLocator: handleLocator,
         });
         if (disposed || !unsubscribe) return;
+        unsubscribeErrors = adapter.subscribeErrors?.(reportReaderError) ?? null;
         setToc(adapter.getToc());
         setLoading(false);
       })
@@ -115,11 +128,12 @@ export const BrowserReader = ({
       });
     return () => {
       disposed = true;
+      unsubscribeErrors?.();
       unsubscribe?.();
       adapterRef.current?.close();
       adapterRef.current = null;
     };
-  }, [adapterFactory, file, handleLocator, initialLocator]);
+  }, [adapterFactory, file, handleLocator, initialLocator, reportReaderError]);
 
   useDependencyEffect(() => {
     saveReaderPreferences(preferences);
@@ -198,7 +212,9 @@ export const BrowserReader = ({
           items={toc}
           onClose={() => setTocOpen(false)}
           onSelect={(item) => {
-            if (item.href) void adapterRef.current?.goTo(item.href);
+            const adapter = adapterRef.current;
+            const href = item.href;
+            if (href && adapter) runReaderAction(() => adapter.goTo(href));
             setTocOpen(false);
           }}
         />
