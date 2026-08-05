@@ -21,7 +21,7 @@
     "@zip.js/zip.js": "^2.8.16",
     "fflate": "^0.8.2",
     "foliate-js": "github:johnfactotum/foliate-js#78914aef4466eb960965702401634c2cb348e9b1",
-    "pdfjs-dist": "^5.5.207",
+    "pdfjs-dist": "^6.2.108",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.1",
