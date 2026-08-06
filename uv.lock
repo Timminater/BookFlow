@@ -1502,25 +1502,25 @@ wheels = [
 
 [[package]]
 name = "qbittorrent-api"
-version = "2026.7.0"
+version = "2026.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "packaging" },
     { name = "requests" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b4/49/73123503771d0610a27bf2e5c73995ddce15e8d8cac6babef8eef51097bb/qbittorrent_api-2026.7.0.tar.gz", hash = "sha256:9f0a6e33ee4dba290d155de3ad59c191de02e4d9639d424bf02ec4a00ecf3205", size = 1427366, upload-time = "2026-07-08T00:54:39.78Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/eb/d2/4a6d6ae6aaca1ba83039d27f28e5bf30bacef27ff4eb635c729d2d582363/qbittorrent_api-2026.8.0.tar.gz", hash = "sha256:4127a9c1d5c7ad9cd4e8de16f83daeea2e8b2ed962f99f284d238f927479391a", size = 1430678, upload-time = "2026-08-01T21:05:55.88Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/40/79/e1ee523dd8b14a4e8b8ddd474a93803855b8170a10240a65997c21d69fe2/qbittorrent_api-2026.7.0-py3-none-any.whl", hash = "sha256:189ff96c2c08f999d82b3b4970c4d3e0da1c32ae9c36e9da2fdec7847e5f37a5", size = 69450, upload-time = "2026-07-08T00:54:38.377Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/81/b456688c20e75cae5964700b58712630930b9dfaf32ce7c6a8881658d0d0/qbittorrent_api-2026.8.0-py3-none-any.whl", hash = "sha256:03b3db598d351194fd3c65f1d3e53843f65f85bef1d5077791efaa2e26869d2b", size = 68196, upload-time = "2026-08-01T21:05:54.376Z" },
 ]
 
 [[package]]
 name = "rarfile"
-version = "4.4"
+version = "4.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/09/84/a00a5be12adbe5abb0094513ad6d3aefc80fe5dfa4a5604e22561d4b7d3b/rarfile-4.4.tar.gz", hash = "sha256:b7d29d671223cdc80e8b992df212d152ad88e6c961d4426c3fb2fefe8dd86fdf", size = 155437, upload-time = "2026-07-22T16:19:15.533Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b2/eb/33ea5625de4e84144069ea021a282ea3c44ff7bd341b740bcadff028bea7/rarfile-4.5.tar.gz", hash = "sha256:7425d0afa180f0092db903abb1526a130b36858980aad90b3694f48e41420155", size = 155541, upload-time = "2026-08-02T20:45:53.221Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e2/06/7135da7d7d662767aee9aeebaa360f4ad29f08d9198cc1b1632428114acd/rarfile-4.4-py3-none-any.whl", hash = "sha256:befb813c283fbcdd46dda2bad090f8272c8bb1de246d04cd570e9d890294d119", size = 29932, upload-time = "2026-07-22T16:19:14.559Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/36/ffd87452bf72310dfd1185ade33e5b8be374ab370d19573a8197ca25c95b/rarfile-4.5-py3-none-any.whl", hash = "sha256:c74341f4b9a3a3ebb35ef396d59daf059eb028f34995a7162950a41d97b84de9", size = 30035, upload-time = "2026-08-02T20:45:52.212Z" },
 ]
 
 [[package]]
