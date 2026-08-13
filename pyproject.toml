@@ -24,14 +24,14 @@ dependencies = [
     "authlib>=1.7.2,<1.8",
     "apprise>=1.12.0",
     "pillow==12.3.0",
-    "pywebpush>=2.0.3,<3",
+    "pywebpush>=2.4.0,<3",
 ]
 
 [project.optional-dependencies]
 browser = [
     "pyvirtualdisplay",
     "pyautogui",
-    "seleniumbase==4.51.8",
+    "seleniumbase==4.51.11",
     "python-xlib",
 ]
 
@@ -42,7 +42,7 @@ dev = [
     "pytest",
     "pytest-cov",
     "pytest-xdist>=3.8.0",
-    "ruff==0.16.1",
+    "ruff==0.16.2",
     "vulture>=2.14",
 ]
 
