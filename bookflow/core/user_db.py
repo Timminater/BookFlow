@@ -19,7 +19,7 @@ from bookflow.core.book_matcher import normalize_isbn
 from bookflow.core.db_migrations import Migration, SQLiteMigrator
 from bookflow.core.durable_jobs import BACKGROUND_JOBS_TABLE_SQL
 from bookflow.core.kepub_cache_schema import KEPUB_CONVERSION_CACHE_MIGRATION_SQL
-from bookflow.core.kobo_db import KOB0_DB_SQL, KOBO_AUTH_RATE_LIMIT_SQL
+from bookflow.core.kobo_db import KOB0_DB_SQL, KOBO_AUTH_RATE_LIMIT_SQL, KOBO_READING_STATES_SQL
 from bookflow.core.logger import setup_logger
 from bookflow.core.metadata_history_schema import METADATA_FIELD_HISTORY_MIGRATION_SQL
 from bookflow.core.platform_features_schema import PLATFORM_FEATURES_MIGRATION_SQL
@@ -1116,6 +1116,7 @@ ALTER TABLE requests ADD COLUMN approval_source TEXT
 CHECK (approval_source IN ('admin', 'user_policy'));
 """
 _MIGRATION_030_CHECKSUM = hashlib.sha256(_MIGRATION_030_DEFINITION.encode()).hexdigest()
+_MIGRATION_031_CHECKSUM = hashlib.sha256(KOBO_READING_STATES_SQL.encode()).hexdigest()
 
 
 def _require_loaded_user(user: dict[str, Any] | None) -> dict[str, Any]:
@@ -1288,6 +1289,12 @@ class UserDB:
                             name="personal-kobo-sync",
                             checksum=_MIGRATION_008_CHECKSUM,
                             apply=self._apply_migration_008,
+                            # v1.2.9 accidentally added reading states to migration 8.
+                            # Preserve those fresh installs' journal; migration 31
+                            # reconciles both released definitions idempotently.
+                            historical_checksums=(
+                                "e211e37e7cf67f74aa97266a1d9f1f28ab13c61f79585a0a3971ee9f01b1f9f0",
+                            ),
                         ),
                         Migration(
                             version=9,
@@ -1420,6 +1427,12 @@ class UserDB:
                             name="per-user-request-auto-approval",
                             checksum=_MIGRATION_030_CHECKSUM,
                             apply=self._apply_migration_030,
+                        ),
+                        Migration(
+                            version=31,
+                            name="kobo-device-reading-states",
+                            checksum=_MIGRATION_031_CHECKSUM,
+                            apply=self._apply_migration_031,
                         ),
                     ),
                 )
@@ -1694,6 +1707,10 @@ class UserDB:
     def _apply_migration_030(conn: sqlite3.Connection) -> None:
         """Add the per-user request policy and its approval audit source."""
         _execute_sql_script(conn, _MIGRATION_030_DEFINITION)
+
+    @staticmethod
+    def _apply_migration_031(conn: sqlite3.Connection) -> None:
+        _execute_sql_script(conn, KOBO_READING_STATES_SQL)
 
     @staticmethod
     def _backfill_catalog_phase_one(conn: sqlite3.Connection) -> None:

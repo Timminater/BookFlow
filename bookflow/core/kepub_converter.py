@@ -82,7 +82,11 @@ def kepub_cache_key(source_sha256: str, converter_version: str, options_hash: st
 def kepub_options_hash(options: Mapping[str, str | int | bool] | None = None) -> str:
     """Hash canonical, restricted kepubify options for cache invalidation."""
     normalized = _normalize_options(options or {})
-    payload = json.dumps(normalized, separators=(",", ":"), sort_keys=True)
+    # Version the output contract as well as CLI options. Older temporary
+    # .epub names made kepubify copy the input rather than convert it.
+    payload = json.dumps(
+        {"output": "kepub-v2", "options": normalized}, separators=(",", ":"), sort_keys=True
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -167,7 +171,9 @@ class KepubConverter:
                         cache_hit=True,
                     )
 
-            temporary_output = self._cache_directory / f".{cache_key}.{uuid.uuid4().hex}.tmp.epub"
+            temporary_output = (
+                self._cache_directory / f".{cache_key}.{uuid.uuid4().hex}.tmp.kepub.epub"
+            )
             try:
                 self._run_converter(source, temporary_output, normalized_options)
                 self._validate_epub_path(temporary_output, source=False)
@@ -257,11 +263,7 @@ class KepubConverter:
         resolved = path.resolve(strict=True)
         if source and resolved.suffix.lower() != ".epub":
             raise KepubConversionError("Source file must use the .epub extension")
-        if (
-            not source
-            and not resolved.name.endswith(".kepub.epub")
-            and ".tmp.epub" not in resolved.name
-        ):
+        if not source and not resolved.name.endswith(".kepub.epub"):
             raise KepubConversionError("KEPUB output must use a controlled .kepub.epub name")
         validate_epub_container(resolved, label)
         return resolved

@@ -25,6 +25,26 @@ afterEach(() => {
 });
 
 describe('reader progress restore selection', () => {
+  it('restores newer Kobo progress instead of an older browser position', () => {
+    expect(
+      readerLocatorForOpen(
+        { value: 'epubcfi(/6/4)', progression: 0.6, updatedAt: '2026-09-25T10:00:00Z' },
+        { value: '', progression: 0.2, completed: false, updatedAt: '2026-09-26T10:00:00Z' },
+      ),
+    ).toEqual({ value: '', progression: 0.2 });
+  });
+
+  it('preserves a newer offline browser reading action', () => {
+    const local = { value: 'epubcfi(/6/8)', progression: 0.7, updatedAt: '2026-09-27T10:00:00Z' };
+    expect(
+      readerLocatorForOpen(local, {
+        value: '',
+        progression: 0.8,
+        completed: false,
+        updatedAt: '2026-09-26T10:00:00Z',
+      }),
+    ).toEqual(local);
+  });
   it('prefers the exact local locator over server progress', () => {
     expect(
       readerLocatorForOpen(
@@ -61,7 +81,7 @@ describe('reader progress restore selection', () => {
 
     saveReaderLocator(7, 36, { value: 'page:36', progression: 0.5 });
 
-    expect(loadReaderLocator(7, 36)).toEqual({ value: 'page:36', progression: 0.5 });
+    expect(loadReaderLocator(7, 36)).toMatchObject({ value: 'page:36', progression: 0.5 });
     expect(loadReaderLocator(7, 37)).toBeNull();
   });
 

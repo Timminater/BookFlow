@@ -654,9 +654,10 @@ class CatalogMonitorService:
                 )
             else:
                 conn.execute(
-                    """INSERT INTO user_reading_progress(user_id, book_id, progress, active, source, revision, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(user_id,book_id) DO UPDATE SET
-                    progress=excluded.progress, active=excluded.active, source=excluded.source, revision=excluded.revision, updated_at=CURRENT_TIMESTAMP""",
+                    """INSERT INTO user_reading_progress(user_id, book_id, progress, active, source, revision, updated_at, reader_updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')) ON CONFLICT(user_id,book_id) DO UPDATE SET
+                    progress=excluded.progress, active=excluded.active, source=excluded.source, revision=excluded.revision, updated_at=CURRENT_TIMESTAMP,
+                    locator_json=NULL, file_id=NULL, reader_updated_at=excluded.reader_updated_at""",
                     (user_id, book_id, float(progress), active, source, revision),
                 )
             self._append_kobo_progress_change(
@@ -704,7 +705,9 @@ class CatalogMonitorService:
             revision = int(old["revision"]) + 1
             conn.execute(
                 """UPDATE user_reading_progress SET progress = 0, active = 0, source = 'web',
-                   revision = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND book_id = ?""",
+                   revision = ?, updated_at = CURRENT_TIMESTAMP, locator_json = NULL, file_id = NULL,
+                   reader_updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
+                   WHERE user_id = ? AND book_id = ?""",
                 (revision, user_id, book_id),
             )
             self._append_kobo_progress_change(

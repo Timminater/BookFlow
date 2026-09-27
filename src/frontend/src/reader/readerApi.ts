@@ -39,11 +39,23 @@ export const getReaderProgress = async (
 export const readerLocatorForOpen = (
   localLocator: ReaderLocator | null,
   serverProgress: ReaderProgress | null,
-): ReaderLocator | null =>
-  localLocator ??
-  (serverProgress
-    ? { value: serverProgress.value, progression: serverProgress.progression }
-    : null);
+): ReaderLocator | null => {
+  const localTime = Date.parse(localLocator?.updatedAt ?? '');
+  const serverTime = Date.parse(serverProgress?.updatedAt ?? '');
+  if (
+    serverProgress &&
+    Number.isFinite(serverTime) &&
+    (!Number.isFinite(localTime) || serverTime > localTime)
+  ) {
+    return { value: serverProgress.value, progression: serverProgress.progression };
+  }
+  return (
+    localLocator ??
+    (serverProgress
+      ? { value: serverProgress.value, progression: serverProgress.progression }
+      : null)
+  );
+};
 
 export const saveReaderProgress = async (
   bookId: number,

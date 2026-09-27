@@ -748,8 +748,10 @@ class KoboSyncService(_KoboSQLiteService):
         progress: float,
         reset: bool = False,
         device_state: dict[str, Any] | None = None,
+        locator: dict[str, Any] | None = None,
+        file_id: int | None = None,
     ) -> dict[str, Any]:
-        """Persist monotone Kobo progress and append it to the Kobo delta stream."""
+        """Resolve device timestamps atomically and journal accepted reading updates."""
         if (
             isinstance(progress, bool)
             or not isinstance(progress, (int, float))
@@ -767,22 +769,63 @@ class KoboSyncService(_KoboSQLiteService):
                 if settings is None or not bool(settings["enabled"]):
                     raise KoboEntitlementError("Kobo is not enabled for this user")  # noqa: TRY301
                 self._require_active_entitled_kobo_book(conn, user_id=user_id, book_id=book_id)
+                if file_id is not None:
+                    self._require_entitled_file(
+                        conn, user_id=user_id, book_id=book_id, file_id=file_id
+                    )
                 old = conn.execute(
-                    "SELECT progress, revision FROM user_reading_progress WHERE user_id = ? AND book_id = ?",
+                    "SELECT * FROM user_reading_progress WHERE user_id = ? AND book_id = ?",
                     (user_id, book_id),
                 ).fetchone()
-                if old is not None and float(progress) < float(old["progress"]) and not reset:
+                observed_at = None
+                if device_state is not None:
+                    bookmark = device_state.get("CurrentBookmark") or {}
+                    raw_time = bookmark.get("LastModified") or device_state.get("LastModified")
+                    if raw_time:
+                        observed_at = datetime.fromisoformat(str(raw_time))
+                        if observed_at.tzinfo is None:
+                            observed_at = observed_at.replace(tzinfo=UTC)
+                        observed_at = min(observed_at.astimezone(UTC), _now())
+                    if old is not None:
+                        previous_time = datetime.fromisoformat(
+                            str(old["reader_updated_at"] or old["updated_at"])
+                        )
+                        if previous_time.tzinfo is None:
+                            previous_time = previous_time.replace(tzinfo=UTC)
+                        stale = observed_at is not None and observed_at <= previous_time
+                        legacy_backwards = observed_at is None and progress < float(old["progress"])
+                        if stale or legacy_backwards:
+                            conn.rollback()
+                            return dict(old)
+                if (
+                    old is not None
+                    and float(progress) < float(old["progress"])
+                    and not reset
+                    and observed_at is None
+                ):
                     raise ValueError("Progress may only decrease after an explicit reset")  # noqa: TRY301
                 revision = int(settings["current_revision"]) + 1
                 active = int(float(progress) < 100)
                 local_revision = int(old["revision"]) + 1 if old else 1
                 now = _iso(_now())
                 conn.execute(
-                    """INSERT INTO user_reading_progress(user_id, book_id, progress, active, source, revision, updated_at)
-                    VALUES (?, ?, ?, ?, 'kobo', ?, ?) ON CONFLICT(user_id, book_id) DO UPDATE SET
+                    """INSERT INTO user_reading_progress(user_id, book_id, progress, active, source, revision, updated_at,
+                    reader_updated_at, locator_json, file_id)
+                    VALUES (?, ?, ?, ?, 'kobo', ?, ?, ?, ?, ?) ON CONFLICT(user_id, book_id) DO UPDATE SET
                     progress=excluded.progress, active=excluded.active, source='kobo', revision=excluded.revision,
-                    updated_at=excluded.updated_at""",
-                    (user_id, book_id, float(progress), active, local_revision, now),
+                    updated_at=excluded.updated_at, reader_updated_at=excluded.reader_updated_at,
+                    locator_json=excluded.locator_json, file_id=excluded.file_id""",
+                    (
+                        user_id,
+                        book_id,
+                        float(progress),
+                        active,
+                        local_revision,
+                        now,
+                        _iso(observed_at) if observed_at else now,
+                        json.dumps(locator) if locator is not None else None,
+                        file_id,
+                    ),
                 )
                 conn.execute(
                     """INSERT INTO user_kobo_progress_changes(user_id, revision, book_id, progress, active, source, created_at)
