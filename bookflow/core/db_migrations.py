@@ -38,6 +38,7 @@ class Migration:
     name: str
     checksum: str
     apply: Callable[[sqlite3.Connection], None]
+    historical_checksums: tuple[str, ...] = ()
 
 
 _JOURNAL_SQL = """
@@ -118,7 +119,7 @@ class SQLiteMigrator:
                     f"Database schema version {version} is newer than this application "
                     f"(latest supported: {self._migrations[-1].version})"
                 )
-            if str(row[2]) != migration.checksum:
+            if str(row[2]) not in (migration.checksum, *migration.historical_checksums):
                 raise MigrationChecksumError(
                     f"Migration {version} checksum differs from the applied database record"
                 )

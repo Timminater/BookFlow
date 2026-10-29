@@ -1097,14 +1097,6 @@ if user_db is not None:
                 if root
             )
         )
-        register_kobo_routes(
-            app,
-            token_service=kobo_token_service,
-            sync_service=kobo_sync_service,
-            allowed_file_roots=kobo_roots,
-            cover_fetcher=lambda cache_id, url: get_image_cache().fetch_and_cache(cache_id, url),
-            sync_audit_recorder=user_db.record_kobo_sync,
-        )
         kepub_converter = None
         kepub_binary = normalize_optional_text(os.environ.get("KEPUBIFY_BINARY", ""))
         kepub_version = normalize_optional_text(os.environ.get("KEPUBIFY_VERSION", ""))
@@ -1153,6 +1145,29 @@ if user_db is not None:
                 kepub_converter = kepub_service.convert_entitled_for_user
             except OSError, RuntimeError, ValueError:
                 logger.exception("KEPUB conversion is unavailable")
+
+        def export_kobo_file(user_id: int, original: dict[str, Any]) -> dict[str, Any]:
+            if kepub_converter is None or original["file_format"].lower() != "epub":
+                return original
+            derived_id = kepub_converter(
+                user_id=user_id, book_id=original["book_id"], source_file_id=original["id"]
+            )
+            derived = CatalogService(_user_db_path).get_entitled_book_file(
+                user_id=user_id, book_id=original["book_id"], file_id=derived_id
+            )
+            if derived is None:
+                raise RuntimeError("Converted Kobo file is unavailable")
+            return derived
+
+        register_kobo_routes(
+            app,
+            token_service=kobo_token_service,
+            sync_service=kobo_sync_service,
+            allowed_file_roots=kobo_roots,
+            cover_fetcher=lambda cache_id, url: get_image_cache().fetch_and_cache(cache_id, url),
+            sync_audit_recorder=user_db.record_kobo_sync,
+            file_exporter=export_kobo_file if kepub_converter is not None else None,
+        )
         register_kobo_settings_routes(
             app,
             db_path=_user_db_path,

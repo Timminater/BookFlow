@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import secrets
 import time
 from copy import deepcopy
 from ipaddress import ip_address
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import parse_qs, urlsplit
 
 from flask import Blueprint, Response, jsonify, request, send_file
 
-from bookflow.core import kobo_protocol
+from bookflow.core import kobo_positions, kobo_protocol
 from bookflow.core.kobo_services import (
     KoboAuthenticationError,
     KoboCursorError,
@@ -37,6 +41,7 @@ KOB0_CONTRACT_FIXTURES: dict[str, dict[str, Any]] = {
 type TLSGuard = Callable[[], bool]
 type CoverFetcher = Callable[[str, str], tuple[bytes, str] | None]
 type SyncAuditRecorder = Callable[..., None]
+type DeviceFileExporter = Callable[[int, dict[str, Any]], dict[str, Any]]
 type KoboRouteFailure = tuple[Response, int]
 type KoboAuthenticationResult = tuple[int, None] | tuple[None, KoboRouteFailure]
 
@@ -61,6 +66,7 @@ def register_kobo_routes(
     tls_guard: TLSGuard = default_external_tls_guard,
     cover_fetcher: CoverFetcher | None = None,
     sync_audit_recorder: SyncAuditRecorder | None = None,
+    file_exporter: DeviceFileExporter | None = None,
 ) -> Blueprint:
     """Create and register Kobo token routes without touching application bootstrap.
 
@@ -69,6 +75,35 @@ def register_kobo_routes(
     returned in error messages.
     """
     blueprint = Blueprint("kobo_mvp", __name__, url_prefix="/api/kobo")
+
+    def device_file(user_id: int, file_id: int) -> tuple[dict[str, Any], Path, Path]:
+        original = sync_service.get_entitled_file(user_id=user_id, file_id=file_id)
+        source = resolve_library_file(original["storage_path"], allowed_roots=allowed_file_roots)
+        exported = file_exporter(user_id, original) if file_exporter else original
+        target = resolve_library_file(exported["storage_path"], allowed_roots=allowed_file_roots)
+        return exported, source, target
+
+    def device_book(user_id: int, book: dict[str, Any]) -> dict[str, Any]:
+        if file_exporter is None:
+            return book
+        exported, _, _ = device_file(user_id, book["file_id"])
+        return {
+            **book,
+            "file_format": exported["file_format"],
+            "size_bytes": exported["size_bytes"],
+        }
+
+    def device_state(user_id: int, book_id: int, stored: dict[str, Any] | None) -> dict[str, Any]:
+        result = kobo_protocol.reading_state(book_id, stored)
+        if stored and stored.get("source") != "kobo" and stored.get("locator_json"):
+            book = sync_service.get_book_metadata(user_id=user_id, book_id=book_id)
+            if stored.get("file_id") == book["file_id"]:
+                _, source, target = device_file(user_id, book["file_id"])
+                locator = json.loads(stored["locator_json"])
+                bookmark = kobo_positions.to_kobo(source, target, str(locator.get("value", "")))
+                if bookmark:
+                    result["CurrentBookmark"].update(bookmark)
+        return result
 
     def authenticate(token: str) -> KoboAuthenticationResult:
         if not tls_guard():
@@ -125,6 +160,62 @@ def register_kobo_routes(
 
     def device_endpoint(token: str) -> str:
         return f"{request.url_root.rstrip('/')}/api/kobo/{token}"
+
+    @blueprint.route("/<token>/oauth/.well-known/openid-configuration", methods=["GET", "POST"])
+    def device_oidc_discovery(token: str) -> tuple[Response, int] | Response:
+        _, failure = authenticate(token)
+        if failure is not None:
+            return failure
+        base = device_endpoint(token) + "/oauth"
+        return jsonify(
+            {
+                "issuer": base,
+                "authorization_endpoint": base + "/connect/authorize",
+                "token_endpoint": base + "/connect/token",
+                "userinfo_endpoint": base + "/connect/userinfo",
+                "jwks_uri": base + "/jwks",
+                "response_types_supported": ["code"],
+                "subject_types_supported": ["public"],
+                "id_token_signing_alg_values_supported": ["RS256"],
+                "grant_types_supported": ["authorization_code", "refresh_token"],
+                "token_endpoint_auth_methods_supported": ["none"],
+            }
+        )
+
+    @blueprint.route("/<token>/oauth/connect/token", methods=["GET", "POST"])
+    @blueprint.route("/<token>/oauth/token", methods=["GET", "POST"])
+    @blueprint.route("/<token>/oauth/connect/authorize", methods=["GET", "POST"])
+    @blueprint.route("/<token>/oauth/authorize", methods=["GET", "POST"])
+    def device_oauth_token(token: str) -> tuple[Response, int] | Response:
+        user_id, failure = authenticate(token)
+        if failure is not None:
+            return failure
+        # Nickel's identity bootstrap is separate from /v1/auth/device.
+        # These opaque compatibility tokens grant no BookFlow access; the
+        # personal URL token must authenticate every resource independently.
+        access, refresh = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        return jsonify(
+            {
+                "access_token": access,
+                "refresh_token": refresh,
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "scope": "",
+                "user_id": str(user_id),
+                "user_key": "",
+                "AccessToken": access,
+                "RefreshToken": refresh,
+                "TokenType": "Bearer",
+            }
+        )
+
+    @blueprint.get("/<token>/oauth/jwks")
+    @blueprint.get("/<token>/oauth/connect/userinfo")
+    def device_oauth_info(token: str) -> tuple[Response, int] | Response:
+        user_id, failure = authenticate(token)
+        if failure is not None:
+            return failure
+        return jsonify({"keys": []} if request.path.endswith("/jwks") else {"sub": str(user_id)})
 
     @blueprint.after_request
     def private_response(response: Response) -> Response:
@@ -204,8 +295,8 @@ def register_kobo_routes(
                 continue
             if str(book["file_format"]).lower() not in {"epub", "kepub"}:
                 continue
-            state = kobo_protocol.reading_state(
-                book_id, sync_service.get_reading_state(user_id=user_id, book_id=book_id)
+            state = device_state(
+                user_id, book_id, sync_service.get_reading_state(user_id=user_id, book_id=book_id)
             )
             if change["type"] == "progress" and book["first_revision"] <= batch.since_revision:
                 payload.append({"ChangedReadingState": {"ReadingState": state}})
@@ -221,7 +312,9 @@ def register_kobo_routes(
                             "BookEntitlement": kobo_protocol.entitlement(
                                 book_id, book["updated_at"]
                             ),
-                            "BookMetadata": kobo_protocol.metadata(book, device_endpoint(token)),
+                            "BookMetadata": kobo_protocol.metadata(
+                                device_book(user_id, book), device_endpoint(token)
+                            ),
                             "ReadingState": state,
                         }
                     }
@@ -242,6 +335,7 @@ def register_kobo_routes(
         return response
 
     @blueprint.get("/<token>/v1/library/<book_identifier>/metadata")
+    @blueprint.get("/<token>/v1/user/library/books/<book_identifier>")
     def device_metadata(token: str, book_identifier: str) -> tuple[Response, int] | Response:
         user_id, failure = authenticate(token)
         if failure is not None:
@@ -251,7 +345,12 @@ def register_kobo_routes(
             book = sync_service.get_book_metadata(user_id=cast(int, user_id), book_id=book_id)
         except ValueError, KoboEntitlementError:
             return jsonify({"code": "not_found"}), 404
-        return jsonify([kobo_protocol.metadata(book, device_endpoint(token))])
+        metadata = kobo_protocol.metadata(
+            device_book(cast(int, user_id), book), device_endpoint(token)
+        )
+        if "/v1/user/library/books/" in request.path:
+            return jsonify(metadata)
+        return jsonify([metadata])
 
     @blueprint.route("/<token>/v1/library/<book_identifier>/state", methods=["GET", "PUT"])
     def device_reading_state(token: str, book_identifier: str) -> tuple[Response, int] | Response:
@@ -265,16 +364,32 @@ def register_kobo_routes(
         except ValueError, KoboEntitlementError:
             return jsonify({"code": "not_found"}), 404
         if request.method == "GET":
-            return jsonify([kobo_protocol.reading_state(book_id, stored)])
+            return jsonify([device_state(user_id, book_id, stored)])
         payload = request.get_json(silent=True)
         try:
             state, progress = kobo_protocol.parse_reading_state(payload, book_identifier, stored)
-            # A stale bookmark must not make the whole device sync fail or
-            # overwrite newer progress. Explicit resets remain a web action.
-            if stored is None or progress >= stored["progress"]:
-                stored = sync_service.set_reading_state(
-                    user_id=user_id, book_id=book_id, progress=progress, device_state=state
+            locator = None
+            source_file_id = None
+            location = (state.get("CurrentBookmark") or {}).get("Location")
+            if isinstance(location, dict) and location.get("Type") == "KoboSpan":
+                book = sync_service.get_book_metadata(user_id=user_id, book_id=book_id)
+                _, source, target = device_file(user_id, book["file_id"])
+                cfi = kobo_positions.from_kobo(
+                    source, target, str(location.get("Source", "")), str(location.get("Value", ""))
                 )
+                if cfi:
+                    locator = {"value": cfi, "progression": progress / 100}
+                    source_file_id = book["file_id"]
+            # Resolve timestamps atomically with the write, including newer
+            # backwards moves and stale offline device submissions.
+            stored = sync_service.set_reading_state(
+                user_id=user_id,
+                book_id=book_id,
+                progress=progress,
+                device_state=state,
+                locator=locator,
+                file_id=source_file_id,
+            )
         except KeyError, TypeError, ValueError, AttributeError:
             return jsonify({"code": "invalid_reading_state"}), 400
         except KoboEntitlementError:
@@ -334,9 +449,31 @@ def register_kobo_routes(
     @blueprint.get("/<token>/v1/user/profile")
     @blueprint.get("/<token>/v1/user/platform")
     @blueprint.get("/<token>/v1/user/loyalty/benefits")
+    @blueprint.route("/<token>/v1/affiliate", methods=["GET", "POST"])
+    @blueprint.get("/<token>/v1/assets")
+    @blueprint.route("/<token>/v1/deals", methods=["GET", "POST"])
+    @blueprint.get("/<token>/v1/products/books/subscriptions")
     def device_optional_resource(token: str) -> tuple[Response, int] | Response:
-        _user_id, failure = authenticate(token)
-        return failure if failure is not None else jsonify({})
+        user_id, failure = authenticate(token)
+        if failure is not None:
+            return failure
+        if request.path.endswith("/analytics/gettests"):
+            return jsonify(
+                {
+                    "Result": "Success",
+                    "TestKey": request.headers.get("X-Kobo-UserKey", ""),
+                    "Tests": {},
+                }
+            )
+        if request.path.endswith("/user/loyalty/benefits"):
+            return jsonify({"Benefits": {}})
+        if request.path.endswith("/assets"):
+            return jsonify({"Assets": []})
+        if request.path.endswith("/user/profile"):
+            return jsonify({"UserId": f"bookflow-{user_id}", "UserDisplayName": "BookFlow"})
+        # Explicit optional store endpoints, as in Calibre-Web's local mode.
+        # Unknown paths and unauthorized requests must still fail normally.
+        return jsonify({})
 
     @blueprint.get("/<token>/v1/library/tags")
     def device_tags(token: str) -> tuple[Response, int] | Response:
@@ -432,8 +569,7 @@ def register_kobo_routes(
             return failure
         user_id = cast(int, user_id)
         try:
-            file_row = sync_service.get_entitled_file(user_id=user_id, file_id=file_id)
-            path = resolve_library_file(file_row["storage_path"], allowed_roots=allowed_file_roots)
+            _, _, path = device_file(user_id, file_id)
         except KoboEntitlementError:
             return jsonify({"code": "not_found", "message": "File not found"}), 404
         except PathSecurityError:
@@ -455,6 +591,17 @@ def register_kobo_routes(
             return jsonify({"code": "not_found", "message": "Cover not found"}), 404
         if cover_fetcher is None:
             return jsonify({"CoverUrl": cover_url})
+        # Catalog metadata may retain the authenticated browser proxy URL.
+        # Resolve its source locally; readers do not have a browser session.
+        if cover_url.startswith("/api/covers/"):
+            try:
+                encoded = parse_qs(urlsplit(cover_url).query).get("url", [""])[0]
+                cover_url = base64.b64decode(encoded, altchars=b"-_", validate=True).decode()
+            except ValueError, binascii.Error, UnicodeDecodeError:
+                return jsonify({"code": "not_found", "message": "Cover not found"}), 404
+        if urlsplit(cover_url).scheme not in {"http", "https"}:
+            return jsonify({"code": "not_found", "message": "Cover not found"}), 404
+        # The fetcher's existing public-address and image checks still apply.
         cover = cover_fetcher(f"kobo-book-{book_id}", cover_url)
         if cover is None:
             return jsonify({"code": "not_found", "message": "Cover not found"}), 404

@@ -41,6 +41,7 @@ def resources(endpoint: str) -> dict[str, Any]:
     paths = {
         "library_sync": "/v1/library/sync",
         "library_metadata": "/v1/library/{Ids}/metadata",
+        "library_book": "/v1/user/library/books/{LibraryItemId}",
         "reading_state": "/v1/library/{Ids}/state",
         "delete_entitlement": "/v1/library/{Ids}",
         "device_auth": "/v1/auth/device",
@@ -50,9 +51,14 @@ def resources(endpoint: str) -> dict[str, Any]:
         "get_tests_request": "/v1/analytics/gettests",
         "post_analytics_event": "/v1/analytics/event",
         "configuration_data": "/v1/configuration",
+        "affiliaterequest": "/v1/affiliate",
+        "assets": "/v1/assets",
+        "deals": "/v1/deals",
+        "book_subscription": "/v1/products/books/subscriptions",
         "user_profile": "/v1/user/profile",
         "user_platform": "/v1/user/platform",
         "user_loyalty_benefits": "/v1/user/loyalty/benefits",
+        "oauth_host": "/oauth",
         "tags": "/v1/library/tags",
         "image_url_template": "/v1/covers/{ImageId}/{Width}/{Height}/image.jpg",
         "image_url_quality_template": "/v1/covers/{ImageId}/{Width}/{Height}/{Quality}/{IsGreyscale}/image.jpg",
@@ -62,6 +68,14 @@ def resources(endpoint: str) -> dict[str, Any]:
         "image_host": endpoint,
         "store_host": "www.kobo.com",
         "store_home": "www.kobo.com/{region}/{language}",
+        # Nickel stores these as string-valued OneStoreServices settings.
+        # Omitting use_one_store can leave the reader on its legacy sync flow.
+        "use_one_store": "True",
+        "kobo_onestorelibrary_enabled": "False",
+        "kobo_subscriptions_enabled": "False",
+        "kobo_superpoints_enabled": "False",
+        "kobo_wishlist_enabled": "False",
+        "kobo_nativeborrow_enabled": "False",
     }
 
 
@@ -127,7 +141,9 @@ def metadata(book: dict[str, Any], endpoint: str) -> dict[str, Any]:
 
 def reading_state(book_id: int, state: dict[str, Any] | None) -> dict[str, Any]:
     progress = float(state["progress"]) if state else 0
-    modified = timestamp(state.get("updated_at") if state else None)
+    modified = timestamp(
+        (state.get("reader_updated_at") or state.get("updated_at")) if state else None
+    )
     status = "Finished" if progress >= 100 else "Reading" if progress > 0 else "ReadyToRead"
     result: dict[str, Any] = {
         "EntitlementId": book_uuid(book_id),
@@ -138,11 +154,10 @@ def reading_state(book_id: int, state: dict[str, Any] | None) -> dict[str, Any]:
         "Statistics": {"LastModified": modified},
         "CurrentBookmark": {
             "ProgressPercent": progress,
-            "ContentSourceProgressPercent": progress,
             "LastModified": modified,
         },
     }
-    if state and isinstance(state.get("device_state"), dict):
+    if state and state.get("source") == "kobo" and isinstance(state.get("device_state"), dict):
         device = state["device_state"]
         # Keep the actual EPUB bookmark when the progress still belongs to it.
         bookmark = device.get("CurrentBookmark")

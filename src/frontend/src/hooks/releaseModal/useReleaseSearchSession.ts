@@ -1,4 +1,12 @@
-import { useCallback, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import {
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
 
 import { useSocket } from '../../contexts/SocketContext';
 import { getReleaseSources, getReleases } from '../../services/api';
@@ -153,7 +161,9 @@ export function useReleaseSearchSession(
   const lastStatusTimeRef = useRef(0);
   const pendingStatusRef = useRef<SearchStatusData | null>(null);
   const statusTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  activeTabRef.current = activeTab;
+  useLayoutEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
 
   const allTabs = useMemo(() => {
     return buildReleaseTabs(availableSources, book.provider, preferredDefaultReleaseSource);

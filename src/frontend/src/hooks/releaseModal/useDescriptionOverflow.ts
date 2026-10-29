@@ -44,6 +44,8 @@ export function useDescriptionOverflow({
     return () => {
       observer.disconnect();
     };
+    // The key changes when the paragraph content changes even if its size does not.
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies
   }, [descriptionExpanded, descriptionKey, descriptionRef]);
 
   return descriptionOverflows;

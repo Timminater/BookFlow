@@ -139,6 +139,8 @@ export function Tooltip({
     }
 
     if (deltaX !== 0 || deltaY !== 0) {
+      // Correct the measured position before the tooltip is painted.
+      // oxlint-disable-next-line react/set-state-in-effect
       setCoords((current) => {
         if (!current) {
           return current;
