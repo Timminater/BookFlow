@@ -1,6 +1,7 @@
 """Focused tests for personal and administrator notification delivery."""
 
 import sqlite3
+from types import SimpleNamespace
 
 from bookflow.core import notifications as notifications_module
 
@@ -125,6 +126,55 @@ def test_available_message_has_book_context_and_link():
     assert title == "Requested Book Available"
     assert '"Book" by Author' in body
     assert "/library/17" in body
+
+
+def test_download_messages_include_requesters():
+    context = notifications_module.NotificationContext(
+        event=notifications_module.NotificationEvent.DOWNLOAD_COMPLETE,
+        title="Book",
+        author="Author",
+        requesters=("timminater", "reader-two"),
+    )
+
+    title, body = notifications_module._render_message(context)
+
+    assert title == "Download Complete"
+    assert body.endswith("Requested by: timminater, reader-two")
+
+
+def test_apprise_delivery_attaches_only_http_cover_urls_and_falls_back(monkeypatch):
+    class _Apprise:
+        calls = []
+
+        @staticmethod
+        def instantiate(_url, *, asset=None):
+            return object()
+
+        def add(self, _plugin):
+            return True
+
+        def notify(self, **kwargs):
+            self.calls.append(kwargs)
+            return "attach" not in kwargs
+
+    monkeypatch.setattr(
+        notifications_module,
+        "apprise",
+        SimpleNamespace(Apprise=_Apprise, AppriseAsset=None),
+    )
+    monkeypatch.setattr(notifications_module, "_apprise_proxy_env", lambda: {})
+
+    result = notifications_module._dispatch_to_apprise(
+        ["ntfys://ntfy.sh/ops"],
+        title="BookFlow",
+        body="Body",
+        notify_type="info",
+        attach="https://covers.example/book.jpg",
+    )
+
+    assert result["success"] is True
+    assert _Apprise.calls[0]["attach"] == "https://covers.example/book.jpg"
+    assert "attach" not in _Apprise.calls[1]
 
 
 def test_admin_targets_only_receive_operational_event_subscriptions(monkeypatch):

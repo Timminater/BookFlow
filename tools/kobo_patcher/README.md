@@ -32,4 +32,12 @@ contains Python 3.12 and Tkinter, verifies the checksum/SBOM and, when signing
 secrets are configured, verifies the Authenticode signature before publishing.
 An unsigned local build is suitable for development only.
 
-The generated generic EXE asks users to paste an `SM1.<payload>.<signature>` pairing code. The code carries the BookFlow origin but no token. The server validates the signature and code freshness during the claim/complete exchange.
+The EXE starts a Dutch four-step wizard: sign in with a BookFlow account,
+connect/select the Kobo, confirm the pairing and patch, then safely eject and
+synchronize. HTTPS login cookies stay in memory and passwords are not saved.
+An `SM1.<payload>.<signature>` code remains available for external-login users.
+The app creates the code in the background for password logins. The server
+validates the signature and expiry during claim/complete.
+
+Both release Docker images include the EXE and copy it to `/config/kobopatcher`
+for downloads. See [Kobo operations](../../docs/kobo.md) for volume replacement.

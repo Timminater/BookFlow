@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import sqlite3
 import time
@@ -34,6 +35,12 @@ def _seed_request_process(db_path):
     )
     assert request_process is not None
     return request_process["id"]
+
+
+def test_default_search_timeout_covers_browser_challenge_fallback():
+    timeout = inspect.signature(SearchService.run_search).parameters["timeout_seconds"].default
+
+    assert timeout == 60.0
 
 
 def test_parallel_search_isolates_errors_deduplicates_and_redacts_urls(tmp_path):

@@ -23,6 +23,10 @@ if TYPE_CHECKING:
 
 SearchSource = Callable[[], list[ReleaseCandidate]]
 _OPAQUE_REFERENCE = re.compile(r"^[A-Za-z0-9:_-]{1,256}$")
+# Browser-challenge fallbacks regularly need just over 30 seconds to start a
+# browser and solve the challenge. Keep the aggregate search window long enough
+# for those sources while still bounding interactive and scheduled searches.
+DEFAULT_SEARCH_TIMEOUT_SECONDS = 60.0
 
 
 class SearchServiceError(RuntimeError):
@@ -121,7 +125,7 @@ class SearchService:
         *,
         profile: ReleaseProfile,
         sources: Mapping[str, SearchSource],
-        timeout_seconds: float = 30,
+        timeout_seconds: float = DEFAULT_SEARCH_TIMEOUT_SECONDS,
         search_run_id: int | None = None,
     ) -> dict[str, Any]:
         """Run a search now; one broken source cannot discard other results."""

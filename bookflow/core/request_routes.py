@@ -75,10 +75,13 @@ def _notify_request(user_db: UserDB, request_row: dict[str, Any], event: Notific
         author=book["author"],
         admin_note=request_row.get("admin_note"),
         book_id=book["id"],
+        cover_url=book.get("cover_url"),
     )
     if event == NotificationEvent.REQUEST_CREATED:
         requester = user_db.get_user(user_id=request_row["user_id"])
         context.username = requester.get("username") if requester else None
+        if context.username:
+            context.requesters = (context.username,)
         notify_admin(event, context)
     # The legacy workflow remains active alongside /api/v1.  Enqueue after the
     # state transition instead of delivering from the request thread.

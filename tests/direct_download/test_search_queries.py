@@ -326,10 +326,12 @@ def test_search_books_filters_locally_when_path_language_enabled(monkeypatch):
     monkeypatch.setattr(dd.network, "AAMirrorSelector", lambda: object())
 
     captured_url: dict[str, str] = {}
+    captured_bypasser_fallback: list[bool] = []
 
     def _fake_html_get_page(url: str, selector, allow_bypasser_fallback=False):
-        del selector, allow_bypasser_fallback
+        del selector
         captured_url["url"] = url
+        captured_bypasser_fallback.append(allow_bypasser_fallback)
         return r"""
         <table>
             <tr>
@@ -358,9 +360,30 @@ def test_search_books_filters_locally_when_path_language_enabled(monkeypatch):
     records = dd.search_books("demo", SearchFilters(lang=["fr"], format=["pdf"]))
 
     assert "&lang=" not in captured_url["url"]
+    assert captured_bypasser_fallback == [True]
     assert len(records) == 1
     assert records[0].id == "rec-fr"
     assert records[0].language == "fr"
+
+
+def test_book_info_allows_bypasser_fallback(monkeypatch):
+    import bookflow.release_sources.direct_download as dd
+
+    monkeypatch.setattr(dd.network, "get_aa_base_url", lambda: "https://mirror.example")
+    monkeypatch.setattr(dd.network, "AAMirrorSelector", lambda: object())
+    captured_bypasser_fallback: list[bool] = []
+
+    def _fake_html_get_page(url: str, selector, allow_bypasser_fallback=False):
+        del url, selector
+        captured_bypasser_fallback.append(allow_bypasser_fallback)
+        return ""
+
+    monkeypatch.setattr(dd.downloader, "html_get_page", _fake_html_get_page)
+
+    with pytest.raises(dd.SearchUnavailableError):
+        dd.get_book_info("record-id")
+
+    assert captured_bypasser_fallback == [True]
 
 
 def test_book_matches_requested_languages_logic():

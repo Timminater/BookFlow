@@ -1,4 +1,4 @@
-"""Token, synchronization and entitlement services for the synthetic Kobo MVP."""
+"""Token, synchronization and entitlement services for Kobo readers."""
 
 from __future__ import annotations
 
@@ -72,6 +72,7 @@ class KoboSyncBatch:
     cursor: str | None
     has_more: bool
     high_water: int
+    since_revision: int = 0
 
 
 def _now() -> datetime:
@@ -112,7 +113,7 @@ class TokenService(_KoboSQLiteService):
         db_path: str,
         *,
         pepper: str | bytes,
-        max_requests_per_window: int = 60,
+        max_requests_per_window: int = 600,
         window: timedelta = timedelta(minutes=1),
     ) -> None:
         super().__init__(db_path)
@@ -245,27 +246,30 @@ class TokenService(_KoboSQLiteService):
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT id, user_id, token_prefix, token_hash, revoked_at "
+                    "FROM kobo_tokens WHERE token_prefix = ?",
+                    (token[:12],),
+                ).fetchone()
+                valid = (
+                    row is not None
+                    and row["revoked_at"] is None
+                    and len(token) >= 12
+                    and token.isascii()
+                    and hmac.compare_digest(str(row["token_hash"]), self._hash_token(token))
+                )
                 rate_limited = self._consume_auth_rate_limit(
                     conn,
                     token_identity_hash=identity_hash,
                     source_ip=normalized_ip,
+                    limit=self._max_requests_per_window
+                    if valid
+                    else min(60, self._max_requests_per_window),
                 )
                 conn.commit()
                 if rate_limited:
                     raise KoboRateLimitError("Kobo token rate limit exceeded")
-                if not token or len(token) < 12 or not token.isascii():
-                    raise KoboAuthenticationError("Invalid Kobo token")
-                expected_hash = self._hash_token(token)
-                row = conn.execute(
-                    """
-                    SELECT id, user_id, token_prefix, token_hash, revoked_at
-                    FROM kobo_tokens WHERE token_prefix = ?
-                    """,
-                    (token[:12],),
-                ).fetchone()
-                if row is None or row["revoked_at"] is not None:
-                    raise KoboAuthenticationError("Invalid Kobo token")
-                if not hmac.compare_digest(str(row["token_hash"]), expected_hash):
+                if not valid or row is None:
                     raise KoboAuthenticationError("Invalid Kobo token")
                 conn.execute(
                     "UPDATE kobo_tokens SET last_used_at = ? WHERE id = ?",
@@ -292,6 +296,7 @@ class TokenService(_KoboSQLiteService):
         *,
         token_identity_hash: str,
         source_ip: str,
+        limit: int,
     ) -> bool:
         now = _now()
         row = conn.execute(
@@ -314,9 +319,7 @@ class TokenService(_KoboSQLiteService):
         else:
             request_count = int(row["request_count"]) + 1
             window_started = datetime.fromisoformat(str(row["window_started"]))
-        blocked_until = (
-            now + self._window if request_count > self._max_requests_per_window else None
-        )
+        blocked_until = now + self._window if request_count > limit else None
         conn.execute(
             """
             INSERT INTO kobo_auth_rate_limits (
@@ -564,7 +567,9 @@ class KoboSyncService(_KoboSQLiteService):
         if row is None:
             raise KoboEntitlementError("File is not entitled for this Kobo user")
 
-    def sync(self, *, user_id: int, cursor: str | None = None) -> KoboSyncBatch:
+    def sync(
+        self, *, user_id: int, cursor: str | None = None, persistent: bool = False
+    ) -> KoboSyncBatch:
         """Return a deterministic initial, incremental or resumed batch of 100 changes."""
         with self._lock:
             conn = self._connect()
@@ -580,17 +585,22 @@ class KoboSyncService(_KoboSQLiteService):
                     last_revision = 0
                 else:
                     high_water, last_revision = self._decode_cursor(cursor, user_id=user_id)
+                    if persistent and last_revision == high_water:
+                        high_water = int(settings["current_revision"])
+                    if last_revision > high_water:
+                        raise KoboCursorError("Sync cursor is ahead of the library")
                 # Progress has its own immutable table so older installations
                 # retain the strict CHECK constraint on user_kobo_changes.  The
                 # revision stream remains one globally ordered Kobo changelog.
                 rows = conn.execute(
                     """
-                    SELECT revision, change_type, book_id, file_id, payload_json
+                    SELECT revision, change_type, book_id, file_id, payload_json, created_at
                     FROM user_kobo_changes
                     WHERE user_id = ? AND revision > ? AND revision <= ?
                     UNION ALL
                     SELECT revision, 'progress' AS change_type, book_id, NULL AS file_id,
-                           json_object('progress', progress, 'active', active, 'source', source) AS payload_json
+                           json_object('progress', progress, 'active', active, 'source', source) AS payload_json,
+                           created_at
                     FROM user_kobo_progress_changes
                     WHERE user_id = ? AND revision > ? AND revision <= ?
                     ORDER BY revision ASC LIMIT ?
@@ -609,17 +619,18 @@ class KoboSyncService(_KoboSQLiteService):
                 selected = rows[:_SYNC_BATCH_SIZE]
                 changes = [self._serialize_change(row) for row in selected]
                 next_cursor = None
-                if selected and has_more:
+                if persistent or (selected and has_more):
                     next_cursor = self._encode_cursor(
                         user_id=user_id,
                         high_water=high_water,
-                        last_revision=int(selected[-1]["revision"]),
+                        last_revision=int(selected[-1]["revision"]) if has_more else high_water,
                     )
                 return KoboSyncBatch(
                     changes=changes,
                     cursor=next_cursor,
                     has_more=has_more,
                     high_water=high_water,
+                    since_revision=last_revision,
                 )
             finally:
                 conn.close()
@@ -633,6 +644,7 @@ class KoboSyncService(_KoboSQLiteService):
             "book_id": int(row["book_id"]),
             "file_id": int(row["file_id"]) if row["file_id"] is not None else None,
             "payload": payload,
+            "created_at": str(row["created_at"]),
         }
 
     def _encode_cursor(self, *, user_id: int, high_water: int, last_revision: int) -> str:
@@ -661,7 +673,8 @@ class KoboSyncService(_KoboSQLiteService):
         if not hmac.compare_digest(signature, expected_signature):
             raise KoboCursorError("Invalid Kobo cursor")
         if (
-            decoded.get("v") != _CURSOR_VERSION
+            not isinstance(decoded, dict)
+            or decoded.get("v") != _CURSOR_VERSION
             or decoded.get("user") != user_id
             or not isinstance(decoded.get("high_water"), int)
             or not isinstance(decoded.get("last_revision"), int)
@@ -714,14 +727,31 @@ class KoboSyncService(_KoboSQLiteService):
                     "SELECT * FROM user_reading_progress WHERE user_id = ? AND book_id = ?",
                     (user_id, book_id),
                 ).fetchone()
-                return dict(row) if row else None
+                if row is None:
+                    return None
+                state = dict(row)
+                device_row = conn.execute(
+                    "SELECT state_json FROM kobo_reading_states WHERE user_id = ? AND book_id = ?",
+                    (user_id, book_id),
+                ).fetchone()
+                if device_row:
+                    state["device_state"] = json.loads(device_row["state_json"])
+                return state
             finally:
                 conn.close()
 
     def set_reading_state(
-        self, *, user_id: int, book_id: int, progress: float, reset: bool = False
+        self,
+        *,
+        user_id: int,
+        book_id: int,
+        progress: float,
+        reset: bool = False,
+        device_state: dict[str, Any] | None = None,
+        locator: dict[str, Any] | None = None,
+        file_id: int | None = None,
     ) -> dict[str, Any]:
-        """Persist monotone Kobo progress and append it to the Kobo delta stream."""
+        """Resolve device timestamps atomically and journal accepted reading updates."""
         if (
             isinstance(progress, bool)
             or not isinstance(progress, (int, float))
@@ -739,22 +769,63 @@ class KoboSyncService(_KoboSQLiteService):
                 if settings is None or not bool(settings["enabled"]):
                     raise KoboEntitlementError("Kobo is not enabled for this user")  # noqa: TRY301
                 self._require_active_entitled_kobo_book(conn, user_id=user_id, book_id=book_id)
+                if file_id is not None:
+                    self._require_entitled_file(
+                        conn, user_id=user_id, book_id=book_id, file_id=file_id
+                    )
                 old = conn.execute(
-                    "SELECT progress, revision FROM user_reading_progress WHERE user_id = ? AND book_id = ?",
+                    "SELECT * FROM user_reading_progress WHERE user_id = ? AND book_id = ?",
                     (user_id, book_id),
                 ).fetchone()
-                if old is not None and float(progress) < float(old["progress"]) and not reset:
+                observed_at = None
+                if device_state is not None:
+                    bookmark = device_state.get("CurrentBookmark") or {}
+                    raw_time = bookmark.get("LastModified") or device_state.get("LastModified")
+                    if raw_time:
+                        observed_at = datetime.fromisoformat(str(raw_time))
+                        if observed_at.tzinfo is None:
+                            observed_at = observed_at.replace(tzinfo=UTC)
+                        observed_at = min(observed_at.astimezone(UTC), _now())
+                    if old is not None:
+                        previous_time = datetime.fromisoformat(
+                            str(old["reader_updated_at"] or old["updated_at"])
+                        )
+                        if previous_time.tzinfo is None:
+                            previous_time = previous_time.replace(tzinfo=UTC)
+                        stale = observed_at is not None and observed_at <= previous_time
+                        legacy_backwards = observed_at is None and progress < float(old["progress"])
+                        if stale or legacy_backwards:
+                            conn.rollback()
+                            return dict(old)
+                if (
+                    old is not None
+                    and float(progress) < float(old["progress"])
+                    and not reset
+                    and observed_at is None
+                ):
                     raise ValueError("Progress may only decrease after an explicit reset")  # noqa: TRY301
                 revision = int(settings["current_revision"]) + 1
                 active = int(float(progress) < 100)
                 local_revision = int(old["revision"]) + 1 if old else 1
                 now = _iso(_now())
                 conn.execute(
-                    """INSERT INTO user_reading_progress(user_id, book_id, progress, active, source, revision, updated_at)
-                    VALUES (?, ?, ?, ?, 'kobo', ?, ?) ON CONFLICT(user_id, book_id) DO UPDATE SET
+                    """INSERT INTO user_reading_progress(user_id, book_id, progress, active, source, revision, updated_at,
+                    reader_updated_at, locator_json, file_id)
+                    VALUES (?, ?, ?, ?, 'kobo', ?, ?, ?, ?, ?) ON CONFLICT(user_id, book_id) DO UPDATE SET
                     progress=excluded.progress, active=excluded.active, source='kobo', revision=excluded.revision,
-                    updated_at=excluded.updated_at""",
-                    (user_id, book_id, float(progress), active, local_revision, now),
+                    updated_at=excluded.updated_at, reader_updated_at=excluded.reader_updated_at,
+                    locator_json=excluded.locator_json, file_id=excluded.file_id""",
+                    (
+                        user_id,
+                        book_id,
+                        float(progress),
+                        active,
+                        local_revision,
+                        now,
+                        _iso(observed_at) if observed_at else now,
+                        json.dumps(locator) if locator is not None else None,
+                        file_id,
+                    ),
                 )
                 conn.execute(
                     """INSERT INTO user_kobo_progress_changes(user_id, revision, book_id, progress, active, source, created_at)
@@ -765,6 +836,13 @@ class KoboSyncService(_KoboSQLiteService):
                     "UPDATE user_kobo_settings SET current_revision = ?, updated_at = ? WHERE user_id = ?",
                     (revision, now, user_id),
                 )
+                if device_state is not None:
+                    conn.execute(
+                        """INSERT INTO kobo_reading_states(user_id, book_id, state_json)
+                           VALUES (?, ?, ?) ON CONFLICT(user_id, book_id)
+                           DO UPDATE SET state_json = excluded.state_json""",
+                        (user_id, book_id, json.dumps(device_state)),
+                    )
                 row = conn.execute(
                     "SELECT * FROM user_reading_progress WHERE user_id = ? AND book_id = ?",
                     (user_id, book_id),
@@ -802,7 +880,10 @@ class KoboSyncService(_KoboSQLiteService):
                 row = conn.execute(
                     """
                     SELECT b.id, b.title, b.author, b.cover_url, b.language, b.publish_year,
-                           bf.id AS file_id, bf.file_format, bf.size_bytes, bf.sha256
+                           bf.id AS file_id, bf.file_format, bf.size_bytes, bf.sha256,
+                           ukb.updated_at, ukb.revision,
+                           (SELECT MIN(revision) FROM user_kobo_changes
+                            WHERE user_id = ukb.user_id AND book_id = ukb.book_id) AS first_revision
                     FROM user_kobo_books ukb
                     INNER JOIN books b ON b.id = ukb.book_id
                     INNER JOIN book_files bf ON bf.id = ukb.file_id

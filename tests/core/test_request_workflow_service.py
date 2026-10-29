@@ -9,6 +9,7 @@ from bookflow.core.request_workflow_service import (
     RequestWorkflowError,
     RequestWorkflowService,
 )
+from bookflow.core.requests_service import RequestServiceError
 from bookflow.core.user_db import _MIGRATION_019_CHECKSUM, UserDB
 
 
@@ -63,6 +64,24 @@ def _insert_file(
     conn.close()
     assert file_id is not None
     return file_id
+
+
+def _insert_books(db_path, *, count: int) -> list[int]:
+    conn = sqlite3.connect(db_path)
+    book_ids: list[int] = []
+    for index in range(count):
+        cursor = conn.execute(
+            """
+            INSERT INTO books (metadata_provider, provider_book_id, title)
+            VALUES ('limit-test', ?, ?)
+            """,
+            (f"book-{index}", f"Book {index}"),
+        )
+        assert cursor.lastrowid is not None
+        book_ids.append(cursor.lastrowid)
+    conn.commit()
+    conn.close()
+    return book_ids
 
 
 def test_request_process_schema_is_present_after_migrations(tmp_path):
@@ -156,6 +175,113 @@ def test_duplicate_request_and_approval_are_idempotent(tmp_path):
     assert request_process["id"] == replayed_request_process["id"]
     assert created is True
     assert replay_created is False
+
+
+def test_user_cannot_exceed_ten_open_requests(tmp_path):
+    db_path = tmp_path / "users.db"
+    _db, _admin, alice, bob, _book_id = _seed(db_path)
+    book_ids = _insert_books(db_path, count=11)
+    service = RequestWorkflowService(db_path)
+    profile = {"formats": ["epub"]}
+
+    created = [
+        service.create_request(user_id=alice["id"], book_id=book_id, profile=profile)
+        for book_id in book_ids[:10]
+    ]
+
+    replay = service.create_request(user_id=alice["id"], book_id=book_ids[0], profile=profile)
+    assert replay["id"] == created[0]["id"]
+    with pytest.raises(RequestWorkflowError) as error:
+        service.create_request(user_id=alice["id"], book_id=book_ids[10], profile=profile)
+
+    assert error.value.code == "open_request_limit_reached"
+    assert error.value.status_code == 429
+    assert (
+        service.create_request(user_id=bob["id"], book_id=book_ids[10], profile=profile)["status"]
+        == "pending_approval"
+    )
+
+
+def test_user_cannot_submit_more_than_ten_requests_per_local_day(tmp_path):
+    db_path = tmp_path / "users.db"
+    db, _admin, alice, _bob, _book_id = _seed(db_path)
+    book_ids = _insert_books(db_path, count=12)
+    service = RequestWorkflowService(db_path)
+    profile = {"formats": ["epub"]}
+
+    for book_id in book_ids[:10]:
+        service.create_request(user_id=alice["id"], book_id=book_id, profile=profile)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE requests SET status = 'cancelled' WHERE user_id = ?",
+            (alice["id"],),
+        )
+
+    with pytest.raises(RequestWorkflowError) as error:
+        service.create_request(user_id=alice["id"], book_id=book_ids[10], profile=profile)
+    assert error.value.code == "daily_request_limit_reached"
+    assert error.value.status_code == 429
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO user_library (user_id, book_id) VALUES (?, ?)",
+            (alice["id"], book_ids[11]),
+        )
+    with pytest.raises(RequestServiceError) as legacy_error:
+        db.create_library_request(user_id=alice["id"], book_id=book_ids[11])
+    assert legacy_error.value.code == "daily_request_limit_reached"
+    assert legacy_error.value.status_code == 429
+
+
+def test_daily_request_limit_resets_on_the_next_local_day(tmp_path):
+    db_path = tmp_path / "users.db"
+    _db, _admin, alice, _bob, _book_id = _seed(db_path)
+    book_ids = _insert_books(db_path, count=11)
+    service = RequestWorkflowService(db_path)
+    profile = {"formats": ["epub"]}
+
+    for book_id in book_ids[:10]:
+        service.create_request(user_id=alice["id"], book_id=book_id, profile=profile)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE requests
+            SET status = 'cancelled', created_at = '2000-01-01 12:00:00'
+            WHERE user_id = ?
+            """,
+            (alice["id"],),
+        )
+
+    created = service.create_request(user_id=alice["id"], book_id=book_ids[10], profile=profile)
+    assert created["status"] == "pending_approval"
+
+
+def test_legacy_rows_mirrored_into_canonical_requests_are_not_counted_twice(tmp_path):
+    db_path = tmp_path / "users.db"
+    _db, _admin, alice, _bob, _book_id = _seed(db_path)
+    book_ids = _insert_books(db_path, count=6)
+    service = RequestWorkflowService(db_path)
+    profile = {"formats": ["epub"]}
+
+    with sqlite3.connect(db_path) as conn:
+        for book_id in book_ids[:5]:
+            cursor = conn.execute(
+                "INSERT INTO download_requests (user_id, book_id) VALUES (?, ?)",
+                (alice["id"], book_id),
+            )
+            assert cursor.lastrowid is not None
+            conn.execute(
+                """
+                INSERT INTO requests (
+                    legacy_request_id, user_id, book_id, content_type,
+                    profile_hash, profile_snapshot_json, status
+                ) VALUES (?, ?, ?, 'ebook', ?, '{}', 'pending_approval')
+                """,
+                (cursor.lastrowid, alice["id"], book_id, "a" * 64),
+            )
+
+    created = service.create_request(user_id=alice["id"], book_id=book_ids[5], profile=profile)
+    assert created["status"] == "pending_approval"
 
 
 def test_user_policy_approves_only_the_requesters_own_request(tmp_path):

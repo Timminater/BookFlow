@@ -569,6 +569,8 @@ export const ActivityCard = ({
     }
 
     return () => observer.disconnect();
+    // Re-measure when content or the available title width changes.
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies
   }, [item.title, item.author, isRequestDetailsOpen, isRequestRejectOpen]);
 
   const reviewRecord = item.requestRecord;

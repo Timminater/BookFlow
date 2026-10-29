@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useLayoutEffect, useRef } from 'react';
 
 import { getSettings, updateSettings, executeSettingsAction } from '../services/api';
 import type {
@@ -140,8 +140,10 @@ export function useSettings(): UseSettingsReturn {
   const valuesRef = useRef<SettingsValues>({});
   const originalValuesRef = useRef<SettingsValues>({});
 
-  valuesRef.current = values;
-  originalValuesRef.current = originalValues;
+  useLayoutEffect(() => {
+    valuesRef.current = values;
+    originalValuesRef.current = originalValues;
+  }, [values, originalValues]);
 
   const applySettingsResponse = useCallback(
     (response: SettingsResponse, options: { preserveDirtyValues?: boolean } = {}) => {

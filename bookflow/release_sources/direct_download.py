@@ -628,7 +628,10 @@ def search_books(query: str, filters: SearchFilters) -> list[BrowseRecord]:
         f"{filters_query}"
     )
 
-    html = downloader.html_get_page(url, selector=selector, allow_bypasser_fallback=False)
+    # AA increasingly protects search pages with a browser challenge. Try the
+    # configured mirrors first, then let the existing bypasser solve a 403 and
+    # cache its cookies for subsequent searches.
+    html = downloader.html_get_page(url, selector=selector, allow_bypasser_fallback=True)
     if not html:
         # Network/mirror exhaustion path bubbles up so API can notify clients
         msg = "Unable to reach download source. Network restricted or mirrors are blocked."
@@ -684,7 +687,7 @@ def get_book_info(book_id: str, *, fetch_download_count: bool = True) -> BrowseR
     """
     url = f"{network.get_aa_base_url()}/md5/{book_id}"
     selector = network.AAMirrorSelector()
-    html = downloader.html_get_page(url, selector=selector, allow_bypasser_fallback=False)
+    html = downloader.html_get_page(url, selector=selector, allow_bypasser_fallback=True)
 
     if not html:
         msg = "Unable to reach download source. Network restricted or mirrors are blocked."

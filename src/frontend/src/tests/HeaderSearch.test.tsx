@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useLayoutEffect } from 'react';
 import { MemoryRouter, useLocation, useNavigate, type NavigateFunction } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -19,7 +20,10 @@ let navigateFromTest: NavigateFunction | undefined;
 
 const LocationProbe = () => {
   const location = useLocation();
-  navigateFromTest = useNavigate();
+  const navigate = useNavigate();
+  useLayoutEffect(() => {
+    navigateFromTest = navigate;
+  }, [navigate]);
   return <output data-testid="location">{`${location.pathname}${location.search}`}</output>;
 };
 

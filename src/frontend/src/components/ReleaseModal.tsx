@@ -873,7 +873,7 @@ const ReleaseModalSession = ({
     const narratorField = book.display_fields.find((f) => f.icon === 'microphone');
 
     return { starField, ratingsField, usersField, pagesField, lengthField, narratorField };
-  }, [book?.display_fields]);
+  }, [book]);
 
   // Get button state for a release row.
   const getButtonState = useCallback(

@@ -155,8 +155,8 @@ export const KoboSettingsPanel = ({ onShowToast, onEnabledChange }: KoboSettings
                 <h4 className="font-medium">{t('koboPanel.devices')}</h4>
                 <p className="mt-1 text-sm opacity-65">
                   {language === 'nl'
-                    ? 'Gebruik in de patchersectie hieronder de Windows-patcher en genereer daar een tijdelijke koppelcode. Je kunt ook de handmatige configuratie gebruiken.'
-                    : 'Use the Windows patcher in the section below and generate the temporary pairing code there. You can also use the manual configuration.'}
+                    ? 'Download hieronder de Windows-patcher. Log in met je BookFlow-account en volg de wizard om je Kobo te koppelen. Handmatige configuratie blijft beschikbaar.'
+                    : 'Download the Windows patcher below. Sign in with your BookFlow account and follow the wizard to connect your Kobo. Manual setup is also available.'}
                 </p>
               </div>
             </div>

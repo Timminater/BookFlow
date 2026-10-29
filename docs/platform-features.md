@@ -22,7 +22,14 @@ books, requests and request processes. `notify`, `request`, and authorized
 
 ## Windows Kobo patcher
 
-The Kobo settings screen creates a ten-minute, single-use `SM1` pairing code.
+The Windows app opens with a four-step wizard: BookFlow account login,
+USB reader selection, confirmed pairing/patching, and safe eject/restart/sync.
+Password login uses the normal BookFlow HTTPS login endpoint and keeps cookies
+only in memory. External-login users can still paste a temporary pairing code.
+The wizard creates its own code after confirmation, so password users do not
+need to copy tokens or codes. See [Kobo setup and operations](kobo.md).
+
+The wizard or Kobo settings screen creates a ten-minute, single-use `SM1` pairing code.
 The code contains only the BookFlow origin, random pairing identity/nonce,
 expiry and protocol version. The server validates its HMAC and stores only a
 nonce hash. Claim attempts are rate-limited per code identity and source IP.

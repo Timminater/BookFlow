@@ -42,6 +42,107 @@ def add_book(user_db, user):
         conn.close()
 
 
+def test_request_notification_context_includes_pending_requesters_and_cover(user_db):
+    conn = user_db._connect()
+    try:
+        first_id = int(
+            conn.execute("INSERT INTO users (username) VALUES (?)", ("requester-one",)).lastrowid
+        )
+        second_id = int(
+            conn.execute("INSERT INTO users (username) VALUES (?)", ("requester-two",)).lastrowid
+        )
+        book_id = int(
+            conn.execute(
+                "INSERT INTO books (metadata_provider, provider_book_id, title, author, cover_url) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("test", "notification-book", "Notification Book", "Author", "https://cover"),
+            ).lastrowid
+        )
+        first_request_id = int(
+            conn.execute(
+                "INSERT INTO download_requests (user_id, book_id) VALUES (?, ?)",
+                (first_id, book_id),
+            ).lastrowid
+        )
+        conn.execute(
+            "INSERT INTO download_requests (user_id, book_id) VALUES (?, ?)",
+            (second_id, book_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    by_request = user_db.get_request_notification_context(request_id=first_request_id)
+    by_book = user_db.get_request_notification_context(book_id=book_id)
+
+    assert by_request == {
+        "book_id": book_id,
+        "title": "Notification Book",
+        "author": "Author",
+        "cover_url": "https://cover",
+        "requesters": ["requester-one"],
+    }
+    assert by_book is not None
+    assert by_book["requesters"] == ["requester-one", "requester-two"]
+
+
+def test_request_notification_context_resolves_shared_request_process(user_db):
+    conn = user_db._connect()
+    try:
+        user_ids = [
+            int(
+                conn.execute(
+                    "INSERT INTO users (username) VALUES (?)", (f"process-requester-{index}",)
+                ).lastrowid
+            )
+            for index in (1, 2)
+        ]
+        book_id = int(
+            conn.execute(
+                "INSERT INTO books (metadata_provider, provider_book_id, title, author, cover_url) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("test", "process-book", "Process Book", "Author", "https://cover/process.jpg"),
+            ).lastrowid
+        )
+        process_id = int(
+            conn.execute(
+                "INSERT INTO request_processes "
+                "(book_id, content_type, profile_hash, profile_snapshot_json, status) "
+                "VALUES (?, 'ebook', ?, '{}', 'downloading')",
+                (book_id, "a" * 64),
+            ).lastrowid
+        )
+        request_ids = [
+            int(
+                conn.execute(
+                    "INSERT INTO requests "
+                    "(user_id, book_id, request_process_id, profile_hash, "
+                    "profile_snapshot_json, status) VALUES (?, ?, ?, ?, '{}', 'approved')",
+                    (user_id, book_id, process_id, f"{index:064d}"),
+                ).lastrowid
+            )
+            for index, user_id in enumerate(user_ids, start=1)
+        ]
+        conn.executemany(
+            "INSERT INTO request_process_recipients (request_process_id, user_id, request_id) "
+            "VALUES (?, ?, ?)",
+            [
+                (process_id, user_id, request_id)
+                for user_id, request_id in zip(user_ids, request_ids, strict=True)
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    context = user_db.get_request_notification_context(request_id=request_ids[0])
+
+    assert context is not None
+    assert context["book_id"] == book_id
+    assert context["requesters"] == ["process-requester-1", "process-requester-2"]
+    assert context["cover_url"] == "https://cover/process.jpg"
+
+
 def test_initialize_creates_canonical_request_schema(user_db, db_path):
     conn = sqlite3.connect(db_path)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(download_requests)")}

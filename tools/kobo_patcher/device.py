@@ -13,6 +13,7 @@ KoboDbRelative = Path(".kobo") / "KoboReader.sqlite"
 KoboVersionRelative = Path(".kobo") / "version"
 
 _MODEL_BY_PLATFORM = {
+    "N613": "Glo",
     "N236": "Clara HD",
     "N249": "Forma",
     "N437": "Sage",

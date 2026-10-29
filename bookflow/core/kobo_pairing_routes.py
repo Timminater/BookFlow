@@ -65,6 +65,7 @@ def register_kobo_pairing_routes(
     config_root: Path | None = None,
     release_api_url: str | None = None,
     release_version: str | None = None,
+    bundled_patcher_dir: Path | None = None,
 ) -> None:
     """Register authenticated code generation and anonymous one-time exchange."""
     blueprint = Blueprint("kobo_pairing", __name__)
@@ -216,6 +217,28 @@ def register_kobo_pairing_routes(
         return next(
             (candidate for candidate in candidates if read_cached_artifact(candidate)), None
         )
+
+    def install_bundled_patcher() -> None:
+        """Seed the persistent volume without overwriting operator replacements."""
+        if cache_root is None or bundled_patcher_dir is None:
+            return
+        for source in bundled_patcher_dir.glob("BookFlowKoboPatcher-*-win-x64.exe"):
+            if read_cached_artifact(source) is None:
+                continue
+            destination = cache_root / source.name
+            # Never overwrite even an invalid replacement: an administrator
+            # may be uploading its sidecars. The next manifest rechecks it.
+            if destination.exists():
+                continue
+            try:
+                for suffix in (".sha256", ".spdx.json", ""):
+                    target = destination.with_name(destination.name + suffix)
+                    with target.open("xb") as stream:
+                        stream.write(source.with_name(source.name + suffix).read_bytes())
+            except FileExistsError:
+                continue
+
+    install_bundled_patcher()
 
     def refresh_patcher_cache() -> Path | None:
         if not release_api_url or cache_root is None:

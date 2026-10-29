@@ -1,20 +1,13 @@
 """Cluster 1 — Cloudflare bypasser wiring + clean-failure behavior.
 
-Reality discovered by running the stack: bookflow's AA *search* and *detail*
-fetches use ``html_get_page(allow_bypasser_fallback=False)``, so a search behind a
-Cloudflare gate returns 503 **regardless** of the bypasser. The bypasser (internal
-Chrome or external FlareSolverr) is a *download-time* mechanism
-(``html_get_page(use_bypasser=True)``); it never runs for search.
+AA search and detail fetches use the configured bypasser after direct mirror
+requests hit a Cloudflare gate. With the bypasser disabled, the same gate must
+still fail cleanly instead of hanging or returning challenge HTML as releases.
 
-So these tests assert what is actually true and host-observable:
+These tests assert what is host-observable:
   * the external bypasser is configured from env, and
-  * a CF-gated search fails *cleanly* (a 503 the client can act on, not a hang or
-    a crash) — both with the bypasser on (it isn't used for search) and off.
-
-Exercising bookflow's *use* of the bypasser end-to-end (a real CF solve during a
-download) needs the AA slow-download HTML flow mocked — see the README roadmap.
-The bypass *mechanism* itself is verified to work: the mock FlareSolverr solves
-the gate (manually confirmed; see README). Guards: #284 #226 #202 #1030 #410 #369.
+  * a CF-gated search succeeds with the external bypasser, and
+  * the same search fails cleanly when bypassing is disabled.
 """
 
 from __future__ import annotations
@@ -34,15 +27,7 @@ def _boot_log() -> str:
 
 
 def _cf_gated_search_has_no_releases(client) -> bool:
-    """A CF-gated AA search must not yield releases (the gate isn't bypassed for
-    search).
-
-    NOTE (observed live): with ``USE_CF_BYPASS=false`` the search is *slow* to fail
-    — the app retries and can take ~60s, vs a fast 503 when the bypasser is enabled
-    (potential #1001 "hung on bypass protection"). We bound the wait and treat a
-    timeout the same as a clean failure: in both cases no releases were obtained,
-    which is the point of this negative control.
-    """
+    """Return whether a bounded CF-gated search produced no releases."""
     try:
         resp = client.direct_search("Mistborn", request_timeout=30)
     except requests.exceptions.Timeout:
@@ -66,10 +51,11 @@ def test_external_bypasser_is_configured(client) -> None:
 
 
 @pytest.mark.profiles("bypasser-external")
-def test_cf_gated_search_fails_cleanly_with_external_bypasser(client) -> None:
-    """Even with the external bypasser configured, a CF-gated *search* yields no
-    releases (the bypasser is download-time) — but it must fail cleanly."""
-    assert _cf_gated_search_has_no_releases(client)
+def test_cf_gated_search_succeeds_with_external_bypasser(client) -> None:
+    """A configured external bypasser makes CF-gated search usable."""
+    resp = client.direct_search("Mistborn", request_timeout=60)
+    assert resp.status_code == 200
+    assert client.releases_from(resp)
 
 
 @pytest.mark.profiles("bypasser-disabled")

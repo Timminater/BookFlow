@@ -1097,14 +1097,6 @@ if user_db is not None:
                 if root
             )
         )
-        register_kobo_routes(
-            app,
-            token_service=kobo_token_service,
-            sync_service=kobo_sync_service,
-            allowed_file_roots=kobo_roots,
-            cover_fetcher=lambda cache_id, url: get_image_cache().fetch_and_cache(cache_id, url),
-            sync_audit_recorder=user_db.record_kobo_sync,
-        )
         kepub_converter = None
         kepub_binary = normalize_optional_text(os.environ.get("KEPUBIFY_BINARY", ""))
         kepub_version = normalize_optional_text(os.environ.get("KEPUBIFY_VERSION", ""))
@@ -1153,6 +1145,29 @@ if user_db is not None:
                 kepub_converter = kepub_service.convert_entitled_for_user
             except OSError, RuntimeError, ValueError:
                 logger.exception("KEPUB conversion is unavailable")
+
+        def export_kobo_file(user_id: int, original: dict[str, Any]) -> dict[str, Any]:
+            if kepub_converter is None or original["file_format"].lower() != "epub":
+                return original
+            derived_id = kepub_converter(
+                user_id=user_id, book_id=original["book_id"], source_file_id=original["id"]
+            )
+            derived = CatalogService(_user_db_path).get_entitled_book_file(
+                user_id=user_id, book_id=original["book_id"], file_id=derived_id
+            )
+            if derived is None:
+                raise RuntimeError("Converted Kobo file is unavailable")
+            return derived
+
+        register_kobo_routes(
+            app,
+            token_service=kobo_token_service,
+            sync_service=kobo_sync_service,
+            allowed_file_roots=kobo_roots,
+            cover_fetcher=lambda cache_id, url: get_image_cache().fetch_and_cache(cache_id, url),
+            sync_audit_recorder=user_db.record_kobo_sync,
+            file_exporter=export_kobo_file if kepub_converter is not None else None,
+        )
         register_kobo_settings_routes(
             app,
             db_path=_user_db_path,
@@ -1170,12 +1185,14 @@ if user_db is not None:
             app,
             resolve_actor=resolve_v1_actor,
             service=pairing_service,
-            patcher_cache=Path(os.environ.get("CONFIG_DIR", "/config")) / "patcher-cache",
+            patcher_cache=Path(os.environ.get("CONFIG_DIR", "/config")) / "kobopatcher",
+            bundled_patcher_dir=Path("/opt/bookflow/kobo-patcher"),
             config_root=Path(os.environ.get("CONFIG_DIR", "/config")),
             release_api_url=normalize_optional_text(
                 os.environ.get(
                     "KOBO_PATCHER_RELEASE_API_URL",
-                    "https://api.github.com/repos/muneebabbas/bookflow/releases/latest",
+                    "https://api.github.com/repos/Timminater/BookFlow/releases/tags/"
+                    f"v{RELEASE_VERSION.removeprefix('v')}",
                 )
             ),
             release_version=RELEASE_VERSION,
@@ -1228,6 +1245,19 @@ def enforce_auth_availability() -> Response | tuple[Response, int] | None:
 def enforce_browser_mutation_origin() -> Response | tuple[Response, int] | None:
     """Reject cross-site state changes made with ambient browser credentials."""
     if request.method in {"GET", "HEAD", "OPTIONS", "TRACE"}:
+        return None
+    # Reader requests authenticate with the URL token, and pairing exchanges
+    # with a signed one-time code/session. Neither uses ambient cookies.
+    # Keep browser provenance checks on account/settings/code-creation routes.
+    if (
+        not request.headers.get("Origin")
+        and not request.headers.get("Sec-Fetch-Site")
+        and (
+            request.blueprint == "kobo_mvp"
+            or request.endpoint
+            in {"kobo_pairing.claim", "kobo_pairing.complete", "kobo_pairing.revoke_session"}
+        )
+    ):
         return None
     if app.config.get("TESTING") and not app.config.get("ENFORCE_MUTATION_ORIGIN"):
         return None
@@ -1942,11 +1972,36 @@ def _notify_admin_for_terminal_download_status(
     if event is None:
         return
 
+    request_id = normalize_positive_int(getattr(task, "request_id", None))
+    book_id = normalize_positive_int(getattr(task, "library_book_id", None))
+    request_context: dict[str, Any] | None = None
+    if user_db is not None and (request_id is not None or book_id is not None):
+        try:
+            request_context = user_db.get_request_notification_context(
+                request_id=request_id,
+                book_id=book_id,
+            )
+        except _OPERATIONAL_ERRORS as exc:
+            logger.warning(
+                "Failed to resolve requesters for download notification %s: %s",
+                task_id,
+                exc,
+            )
+
+    requesters = request_context.get("requesters", []) if request_context else []
+    if not isinstance(requesters, (list, tuple)):
+        requesters = []
+    title = request_context.get("title") if request_context else None
+    author = request_context.get("author") if request_context else None
+    cover_url = request_context.get("cover_url") if request_context else None
+    resolved_book_id = (
+        normalize_positive_int(request_context.get("book_id")) if request_context else book_id
+    )
     content_type = normalize_optional_text(getattr(task, "content_type", None))
     context = NotificationContext(
         event=event,
-        title=str(getattr(task, "title", "Unknown title") or "Unknown title"),
-        author=str(getattr(task, "author", "Unknown author") or "Unknown author"),
+        title=str(title or getattr(task, "title", "Unknown title") or "Unknown title"),
+        author=str(author or getattr(task, "author", "Unknown author") or "Unknown author"),
         username=normalize_optional_text(getattr(task, "username", None)),
         content_type=normalize_content_type(content_type) if content_type is not None else None,
         format=normalize_optional_text(getattr(task, "format", None)),
@@ -1956,6 +2011,9 @@ def _notify_admin_for_terminal_download_status(
             if event == NotificationEvent.DOWNLOAD_FAILED
             else None
         ),
+        book_id=resolved_book_id,
+        requesters=tuple(str(requester) for requester in requesters),
+        cover_url=str(cover_url) if cover_url else None,
     )
     try:
         notify_admin(event, context)

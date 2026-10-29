@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import { useLanguage } from '../contexts/LanguageContext';
 import { useDependencyEffect } from '../hooks/useMountEffect';
@@ -70,14 +70,16 @@ export const InteractiveSearchModal = ({
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
   const previousFocus = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  useLayoutEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
-  const clearPoll = () => {
+  const clearPoll = useCallback(() => {
     if (pollTimer.current) {
       clearTimeout(pollTimer.current);
       pollTimer.current = null;
     }
-  };
+  }, []);
   useDependencyEffect(() => {
     mounted.current = true;
     previousFocus.current =
@@ -159,7 +161,7 @@ export const InteractiveSearchModal = ({
         setSearching(false);
       }
     }
-  }, [refreshRun, requestProcess.id, t]);
+  }, [clearPoll, refreshRun, requestProcess.id, t]);
   useDependencyEffect(() => {
     void startSearch();
   }, [startSearch]);

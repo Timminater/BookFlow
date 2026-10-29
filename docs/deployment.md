@@ -45,7 +45,7 @@ ingest directory separately at `/books`.
   the same restricted access. Do not put them in a Git repository or a support
   paste.
 - Keep `/config/backups`, `/config/.restore-staging` and
-  `/config/patcher-cache` on the same protected appdata mapping. Do not map
+  `/config/kobopatcher` on the same protected appdata mapping. Do not map
   those paths to public shares. The application creates backup archives with
   owner-only permissions and verifies patcher checksums before serving them.
 - A staged restore is applied only during container startup, before database

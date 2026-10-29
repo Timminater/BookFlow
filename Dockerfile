@@ -4,7 +4,7 @@ ARG BUILDPLATFORM
 ARG BUILDARCH
 
 # Frontend build stage.
-FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:50c8e8ca1d27439048670df5883f32d57cf81cff6233222c893fd0d9884cbd81 AS frontend-builder
 
 # Helpful debug output to see what platforms BuildKit thinks it's using
 RUN echo "BUILDPLATFORM=$BUILDPLATFORM BUILDARCH=$BUILDARCH TARGETPLATFORM=$TARGETPLATFORM TARGETARCH=$TARGETARCH"
@@ -25,7 +25,7 @@ COPY src/frontend/ ./
 RUN npm run build
 
 # Use python-slim as the base image
-FROM python:3.14.6-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS base
+FROM python:3.15.0-slim@sha256:f5b92f2a669a4c347044f29367f31983280b648250ca94dea66f98c53bc87e58 AS base
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.3@sha256:90bbb3c16635e9627f49eec6539f956d70746c409209041800a0280b93152823 /uv /uvx /bin/
 
@@ -131,7 +131,9 @@ WORKDIR /app
 # Install core Python dependencies first for better layer caching
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-default-groups
+    apt-get update && apt-get install -y --no-install-recommends build-essential libffi-dev && \
+    uv sync --locked --no-default-groups && \
+    apt-get purge -y --auto-remove build-essential libffi-dev && rm -rf /var/lib/apt/lists/*
 
 # Runtime dependencies are installed into /app/.venv during the build. Remove the
 # base image's system pip so stale installer CVEs do not ship in the final image.
@@ -144,6 +146,10 @@ RUN rm -rf \
 
 # Copy application code *after* dependencies are installed
 COPY . .
+
+# Release jobs supply the tested Windows EXE and checksum/SBOM before building
+# either image. Keep a copy outside /config, since Unraid bind-mounts /config.
+COPY tools/kobo_patcher/bundled/ /opt/bookflow/kobo-patcher/
 
 # Copy built frontend from frontend-builder stage
 COPY --from=frontend-builder /frontend/dist /app/frontend-dist
@@ -260,3 +266,4 @@ ENV USING_EXTERNAL_BYPASSER=true
 RUN rm -f /usr/bin/uv /usr/bin/uvx
 
 CMD ["/app/entrypoint.sh"]
+

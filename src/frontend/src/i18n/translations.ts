@@ -452,7 +452,7 @@ const en = {
   'reader.notificationsSubtitle': 'Manage browser notifications for this account and device.',
   'reader.patcherTitle': 'Windows Kobo Patcher',
   'reader.patcherHelp':
-    'Download the standalone Windows app, connect your reader via USB and paste the temporary code. The patcher finds the Kobo folder automatically; no drive letter is needed.',
+    'Download the Windows app and sign in with your BookFlow account. The wizard guides you through connecting, choosing and setting up your Kobo. For external login, you can also use a pairing code.',
   'reader.downloadPatcher': 'Download Windows Patcher',
   'reader.generateCode': 'Generate pairing code',
   'reader.oneTimeCode': 'One-time pairing code',
@@ -504,7 +504,8 @@ const en = {
   'koboPanel.disabledToast': 'Kobo sync disabled.',
   'koboPanel.updateFailed': 'Kobo sync could not be updated.',
   'koboPanel.devices': 'Connected readers',
-  'koboPanel.devicesHelp': 'Use the Windows patcher and a temporary pairing code for new readers.',
+  'koboPanel.devicesHelp':
+    'Use the Windows patcher and sign in with your BookFlow account to connect a reader.',
   'koboPanel.noDevices': 'No active Kobo readers are connected.',
   'koboPanel.unnamedDevice': 'Unnamed Kobo reader',
   'koboPanel.created': 'Created {date}',
@@ -1386,7 +1387,7 @@ const nl: Record<TranslationKey, string> = {
   'reader.notificationsSubtitle': 'Beheer browsermeldingen voor dit account en dit apparaat.',
   'reader.patcherTitle': 'Windows Kobo-patcher',
   'reader.patcherHelp':
-    'Download de zelfstandige Windows-app, sluit je reader via USB aan en plak de tijdelijke code. De patcher zoekt zelf de Kobo-map; stationsletters zijn niet nodig.',
+    'Download de Windows-app en log in met je BookFlow-account. De wizard helpt je bij het aansluiten, kiezen en instellen van je Kobo. Voor externe login kun je ook een koppelcode gebruiken.',
   'reader.downloadPatcher': 'Windows-patcher downloaden',
   'reader.generateCode': 'Genereer koppelcode',
   'reader.oneTimeCode': 'Eenmalige koppelcode',
@@ -1440,7 +1441,7 @@ const nl: Record<TranslationKey, string> = {
   'koboPanel.updateFailed': 'Kobo-sync kon niet worden bijgewerkt.',
   'koboPanel.devices': 'Gekoppelde e-readers',
   'koboPanel.devicesHelp':
-    'Gebruik voor nieuwe e-readers de Windows-patcher en een tijdelijke koppelcode.',
+    'Gebruik de Windows-patcher en log in met je BookFlow-account om een reader te koppelen.',
   'koboPanel.noDevices': 'Er zijn geen actieve Kobo-e-readers gekoppeld.',
   'koboPanel.unnamedDevice': 'Naamloze Kobo-e-reader',
   'koboPanel.created': 'Aangemaakt op {date}',

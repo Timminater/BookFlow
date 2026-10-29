@@ -82,6 +82,20 @@ export const LibraryPage = ({
   koboEnabled?: boolean;
   koboOnly?: boolean;
 }) => {
+  const [params] = useSearchParams();
+  if (!koboOnly && params.get('shelf') === 'kobo') {
+    return <Navigate to="/kobo" replace />;
+  }
+  return <LibraryPageContent koboEnabled={koboEnabled} koboOnly={koboOnly} />;
+};
+
+const LibraryPageContent = ({
+  koboEnabled = false,
+  koboOnly = false,
+}: {
+  koboEnabled?: boolean;
+  koboOnly?: boolean;
+}) => {
   const { t } = useLanguage();
   const [params, setParams] = useSearchParams();
   const [books, setBooks] = useState<V1Book[]>([]);
@@ -97,9 +111,6 @@ export const LibraryPage = ({
   const sort: LibrarySort = isLibrarySort(sortParam) ? sortParam : 'recent';
   const view: LibraryView = params.get('view') === 'list' ? 'list' : 'grid';
   const koboShelf = koboEnabled && koboOnly;
-  if (!koboOnly && params.get('shelf') === 'kobo') {
-    return <Navigate to="/kobo" replace />;
-  }
   const pageSize = 30;
   const offset = Math.max(0, Number(params.get('offset') ?? '0') || 0);
   const load = useCallback(async () => {

@@ -239,7 +239,7 @@ def html_get_page(
         cancel_flag: Optional event used to abort retries early.
         status_callback: Optional callback for UI status updates.
         allow_bypasser_fallback: If False, 403 errors will trigger mirror rotation
-            instead of switching to the bypasser. Use for search operations.
+            instead of switching to the bypasser.
         use_bypasser: Whether to start with the bypasser instead of direct HTTP.
         include_response_url: If True, return `(html, final_url)` to expose the
             resolved response URL after redirects.
@@ -383,6 +383,22 @@ def html_get_page(
 
         except Exception as e:
             status = _get_status_code(e)
+
+            # AA can turn a previously solved browser challenge into a
+            # same-host redirect loop when its cached clearance state is no
+            # longer accepted. Treat that loop like the equivalent 403 and
+            # refresh the page through the configured bypasser.
+            if (
+                isinstance(e, requests.exceptions.TooManyRedirects)
+                and allow_bypasser_fallback
+                and _is_cf_bypass_enabled()
+                and not use_bypasser_now
+            ):
+                logger.info("Redirect loop detected; switching to bypasser: %s", current_url)
+                if status_callback:
+                    status_callback("resolving", "Bypassing protection...")
+                use_bypasser_now = True
+                continue
 
             # 403 = Cloudflare/DDoS-Guard protection
             if status == _HTTP_STATUS_FORBIDDEN:

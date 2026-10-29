@@ -1,6 +1,11 @@
 name: Build Kobo patcher
 
 on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       version:
@@ -28,7 +33,7 @@ jobs:
         run: |
           python -m pip install pytest
           $env:PYTHONPATH = "tools"
-          python -m pytest tools/kobo_patcher/tests -q
+          python -m pytest tools/kobo_patcher/tests -q -o addopts=
       - name: Build self-contained EXE
         shell: pwsh
         run: |
@@ -96,4 +101,5 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
+          draft: true
           files: tools/kobo_patcher/dist/*

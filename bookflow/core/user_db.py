@@ -19,7 +19,7 @@ from bookflow.core.book_matcher import normalize_isbn
 from bookflow.core.db_migrations import Migration, SQLiteMigrator
 from bookflow.core.durable_jobs import BACKGROUND_JOBS_TABLE_SQL
 from bookflow.core.kepub_cache_schema import KEPUB_CONVERSION_CACHE_MIGRATION_SQL
-from bookflow.core.kobo_db import KOB0_DB_SQL, KOBO_AUTH_RATE_LIMIT_SQL
+from bookflow.core.kobo_db import KOB0_DB_SQL, KOBO_AUTH_RATE_LIMIT_SQL, KOBO_READING_STATES_SQL
 from bookflow.core.logger import setup_logger
 from bookflow.core.metadata_history_schema import METADATA_FIELD_HISTORY_MIGRATION_SQL
 from bookflow.core.platform_features_schema import PLATFORM_FEATURES_MIGRATION_SQL
@@ -27,6 +27,7 @@ from bookflow.core.request_validation import (
     normalize_request_status,
     validate_status_transition,
 )
+from bookflow.core.requests_service import enforce_request_limits
 
 logger = setup_logger(__name__)
 
@@ -1115,6 +1116,7 @@ ALTER TABLE requests ADD COLUMN approval_source TEXT
 CHECK (approval_source IN ('admin', 'user_policy'));
 """
 _MIGRATION_030_CHECKSUM = hashlib.sha256(_MIGRATION_030_DEFINITION.encode()).hexdigest()
+_MIGRATION_031_CHECKSUM = hashlib.sha256(KOBO_READING_STATES_SQL.encode()).hexdigest()
 
 
 def _require_loaded_user(user: dict[str, Any] | None) -> dict[str, Any]:
@@ -1287,6 +1289,12 @@ class UserDB:
                             name="personal-kobo-sync",
                             checksum=_MIGRATION_008_CHECKSUM,
                             apply=self._apply_migration_008,
+                            # v1.2.9 accidentally added reading states to migration 8.
+                            # Preserve those fresh installs' journal; migration 31
+                            # reconciles both released definitions idempotently.
+                            historical_checksums=(
+                                "e211e37e7cf67f74aa97266a1d9f1f28ab13c61f79585a0a3971ee9f01b1f9f0",
+                            ),
                         ),
                         Migration(
                             version=9,
@@ -1419,6 +1427,12 @@ class UserDB:
                             name="per-user-request-auto-approval",
                             checksum=_MIGRATION_030_CHECKSUM,
                             apply=self._apply_migration_030,
+                        ),
+                        Migration(
+                            version=31,
+                            name="kobo-device-reading-states",
+                            checksum=_MIGRATION_031_CHECKSUM,
+                            apply=self._apply_migration_031,
                         ),
                     ),
                 )
@@ -1693,6 +1707,10 @@ class UserDB:
     def _apply_migration_030(conn: sqlite3.Connection) -> None:
         """Add the per-user request policy and its approval audit source."""
         _execute_sql_script(conn, _MIGRATION_030_DEFINITION)
+
+    @staticmethod
+    def _apply_migration_031(conn: sqlite3.Connection) -> None:
+        _execute_sql_script(conn, KOBO_READING_STATES_SQL)
 
     @staticmethod
     def _backfill_catalog_phase_one(conn: sqlite3.Connection) -> None:
@@ -3012,6 +3030,7 @@ class UserDB:
         with self._lock:
             conn = self._connect()
             try:
+                conn.execute("BEGIN IMMEDIATE")
                 book = conn.execute(
                     "SELECT id, title, author FROM books WHERE id = ?", (book_id,)
                 ).fetchone()
@@ -3043,6 +3062,7 @@ class UserDB:
                 ).fetchone()
                 if duplicate is not None:
                     raise ValueError("Duplicate pending Request exists for this Book")
+                enforce_request_limits(conn, user_id=user_id)
                 cursor = conn.execute(
                     "INSERT INTO download_requests (user_id, book_id, note) VALUES (?, ?, ?)",
                     (user_id, book_id, note),
@@ -3138,9 +3158,115 @@ class UserDB:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT id, title, author FROM books WHERE id = ?", (book_id,)
+                "SELECT id, title, author, cover_url FROM books WHERE id = ?", (book_id,)
             ).fetchone()
             return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def get_request_notification_context(
+        self, *, request_id: int | None = None, book_id: int | None = None
+    ) -> dict[str, Any] | None:
+        """Return the Book and requester projection needed by admin notifications.
+
+        New request-process downloads carry one canonical ``requests.id`` in
+        their task snapshot.  The legacy admin fulfilment route does not carry
+        a request id, so its pending requesters are resolved by Book instead.
+        """
+        conn = self._connect()
+        try:
+            row = None
+            requester_rows: list[Any] = []
+            if request_id is not None:
+                row = conn.execute(
+                    """
+                    SELECT requests.book_id, books.id, books.title, books.author, books.cover_url,
+                           requests.request_process_id, requests.user_id
+                    FROM requests
+                    JOIN books ON books.id = requests.book_id
+                    WHERE requests.id = ?
+                    """,
+                    (request_id,),
+                ).fetchone()
+                if row is not None and row["request_process_id"] is not None:
+                    requester_rows = conn.execute(
+                        """
+                        SELECT DISTINCT users.username
+                        FROM request_process_recipients
+                        JOIN users ON users.id = request_process_recipients.user_id
+                        WHERE request_process_recipients.request_process_id = ?
+                        ORDER BY request_process_recipients.created_at,
+                                 request_process_recipients.request_id
+                        """,
+                        (row["request_process_id"],),
+                    ).fetchall()
+                if row is not None and not requester_rows:
+                    requester_rows = conn.execute(
+                        "SELECT username FROM users WHERE id = ?", (row["user_id"],)
+                    ).fetchall()
+
+                if row is None:
+                    row = conn.execute(
+                        """
+                        SELECT download_requests.book_id, books.id, books.title,
+                               books.author, books.cover_url, download_requests.user_id
+                        FROM download_requests
+                        JOIN books ON books.id = download_requests.book_id
+                        WHERE download_requests.id = ?
+                        """,
+                        (request_id,),
+                    ).fetchone()
+                    if row is not None:
+                        requester_rows = conn.execute(
+                            "SELECT username FROM users WHERE id = ?", (row["user_id"],)
+                        ).fetchall()
+
+            if row is None and book_id is not None:
+                row = conn.execute(
+                    "SELECT id, title, author, cover_url FROM books WHERE id = ?",
+                    (book_id,),
+                ).fetchone()
+                if row is not None:
+                    requester_rows = conn.execute(
+                        """
+                        SELECT DISTINCT users.username
+                        FROM requests
+                        JOIN users ON users.id = requests.user_id
+                        WHERE requests.book_id = ?
+                          AND requests.status IN ('pending_approval', 'approved')
+                        ORDER BY requests.created_at, requests.id
+                        """,
+                        (book_id,),
+                    ).fetchall()
+                    legacy_rows = conn.execute(
+                        """
+                        SELECT DISTINCT users.username
+                        FROM download_requests
+                        JOIN users ON users.id = download_requests.user_id
+                        WHERE download_requests.book_id = ?
+                          AND download_requests.status = 'pending'
+                        ORDER BY download_requests.created_at, download_requests.id
+                        """,
+                        (book_id,),
+                    ).fetchall()
+                    requester_rows.extend(legacy_rows)
+
+            if row is None:
+                return None
+
+            requesters: list[str] = []
+            for requester_row in requester_rows:
+                username = str(requester_row["username"] or "").strip()
+                if username and username not in requesters:
+                    requesters.append(username)
+
+            return {
+                "book_id": int(row["id"]),
+                "title": row["title"],
+                "author": row["author"],
+                "cover_url": row["cover_url"],
+                "requesters": requesters,
+            }
         finally:
             conn.close()
 

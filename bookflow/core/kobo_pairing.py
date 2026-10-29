@@ -290,6 +290,13 @@ class KoboPairingService:
                     user_id=int(row["user_id"]), token_id=issued.token_id
                 )
                 raise PairingError("Pairing session was already completed")
+            # Completing the explicitly confirmed wizard is opt-in to sync,
+            # including for an account that has never opened Kobo settings.
+            conn.execute(
+                """INSERT INTO user_kobo_settings(user_id, enabled) VALUES (?, 1)
+                   ON CONFLICT(user_id) DO UPDATE SET enabled=1""",
+                (int(row["user_id"]),),
+            )
         return {
             "token_id": issued.token_id,
             "api_endpoint": f"{str(row['origin'])}/api/kobo/{issued.token}",

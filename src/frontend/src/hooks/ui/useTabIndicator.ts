@@ -18,6 +18,8 @@ export function useTabIndicator(
   useLayoutEffect(() => {
     const activeButton = tabRefs.current[activeTab];
     if (!activeButton) {
+      // Reset before paint when the selected tab no longer exists.
+      // oxlint-disable-next-line react/set-state-in-effect
       setTabIndicatorStyle({ left: 0, width: 0 });
       return undefined;
     }
@@ -41,6 +43,8 @@ export function useTabIndicator(
     return () => {
       window.removeEventListener('resize', updateIndicator);
     };
+    // Tab contents can change while the active key remains the same.
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies
   }, [activeTab, tabRefs, tabsDependency]);
 
   return tabIndicatorStyle;

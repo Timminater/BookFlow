@@ -89,3 +89,12 @@ CREATE TABLE IF NOT EXISTS kobo_auth_rate_limits (
     PRIMARY KEY (token_identity_hash, source_ip)
 );
 """
+
+KOBO_READING_STATES_SQL = """
+CREATE TABLE IF NOT EXISTS kobo_reading_states (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    state_json TEXT NOT NULL,
+    PRIMARY KEY (user_id, book_id)
+);
+"""

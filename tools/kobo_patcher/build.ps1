@@ -37,11 +37,13 @@ $template = $template.Replace('{{VERSION_TUPLE}}', $versionTuple).Replace('{{VER
 Set-Content -NoNewline -Encoding ascii -Path $generatedVersionInfo -Value $template
 
 & $Python -m pip install --requirement $requirements
+if ($LASTEXITCODE -ne 0) { throw "Installing the build dependencies failed." }
 & $Python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx `
     --name "BookFlowKoboPatcher" --icon $icon --version-file $generatedVersionInfo `
     --paths (Split-Path -Parent $project) `
     --distpath $output --workpath $work --specpath $spec `
     (Join-Path $project "entry.py")
+if ($LASTEXITCODE -ne 0) { throw "Building the patcher failed." }
 
 $exe = Join-Path $output "BookFlowKoboPatcher.exe"
 if (-not (Test-Path $exe)) { throw "PyInstaller did not produce $exe" }

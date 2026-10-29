@@ -117,6 +117,45 @@ class TestTerminalSnapshotCapture:
         finally:
             main_module.backend.book_queue.cancel_download(task_id)
 
+    def test_request_complete_notification_includes_requesters_and_cover(self, main_module):
+        user = _create_user(main_module, prefix="snap-request-notify")
+        task_id = f"notify-request-{uuid.uuid4().hex[:8]}"
+        task = DownloadTask(
+            task_id=task_id,
+            source="direct_download",
+            title="Download Snapshot",
+            author="Release Author",
+            user_id=user["id"],
+            username=user["username"],
+            request_id=41,
+            library_book_id=17,
+        )
+        assert main_module.backend.book_queue.add(task) is True
+
+        try:
+            with patch.object(
+                main_module.user_db,
+                "get_request_notification_context",
+                return_value={
+                    "book_id": 17,
+                    "title": "Requested Book",
+                    "author": "Book Author",
+                    "cover_url": "https://covers.example/requested.jpg",
+                    "requesters": ["timminater", "reader-two"],
+                },
+            ):
+                with patch.object(main_module, "notify_admin") as mock_notify:
+                    main_module.backend.book_queue.update_status(task_id, QueueStatus.COMPLETE)
+
+            mock_notify.assert_called_once()
+            _event, context = mock_notify.call_args.args
+            assert context.title == "Requested Book"
+            assert context.author == "Book Author"
+            assert context.requesters == ("timminater", "reader-two")
+            assert context.cover_url == "https://covers.example/requested.jpg"
+        finally:
+            main_module.backend.book_queue.cancel_download(task_id)
+
     def test_complete_transition_emits_activity_update_to_owner_and_admin_rooms(self, main_module):
         user = _create_user(main_module, prefix="snap-activity-update")
         task_id = f"activity-update-{uuid.uuid4().hex[:8]}"

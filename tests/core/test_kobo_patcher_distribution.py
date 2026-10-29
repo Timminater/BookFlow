@@ -108,3 +108,37 @@ def test_secure_cache_creates_private_posix_directory(tmp_path: Path) -> None:
     assert secure_patcher_cache(cache, config_root=cache.parent) == cache.resolve()
     assert cache.exists()
     assert cache.stat().st_mode & 0o077 == 0
+
+
+def test_container_seeds_volume_and_keeps_operator_replacement(tmp_path):
+    bundle = tmp_path / "image"
+    bundle.mkdir()
+    source = _write_artifact(bundle, "1.2.9")
+    config = tmp_path / "config"
+    destination = config / "kobopatcher"
+
+    def start():
+        app = Flask(__name__)
+        register_kobo_pairing_routes(
+            app,
+            resolve_actor=lambda: _Actor(),
+            service=_PairingService(),
+            patcher_cache=destination,
+            config_root=config,
+            release_version="1.2.9",
+            bundled_patcher_dir=bundle,
+        )
+        return app.test_client()
+
+    client = start()
+    installed = destination / source.name
+    assert installed.read_bytes() == source.read_bytes()
+    assert client.get("/api/v1/kobo/patcher/manifest").json["available"] is True
+    replacement = b"MZ locally replaced patcher"
+    installed.write_bytes(replacement)
+    installed.with_name(installed.name + ".sha256").write_text(
+        f"{hashlib.sha256(replacement).hexdigest()}  {installed.name}"
+    )
+    client = start()
+    assert installed.read_bytes() == replacement
+    assert client.get("/api/v1/kobo/patcher/download").data == replacement

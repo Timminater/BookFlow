@@ -118,6 +118,37 @@ def test_html_get_page_aa_same_host_redirect_is_followed(monkeypatch):
     assert all(c["allow_redirects"] is False for c in calls)
 
 
+def test_html_get_page_aa_redirect_loop_uses_bypasser_fallback(monkeypatch):
+    import bookflow.download.http as http
+
+    monkeypatch.setattr(http, "_is_cf_bypass_enabled", lambda: True)
+    monkeypatch.setattr(http, "get_cf_cookies_for_domain", lambda _domain: {"cf": "stale"})
+    monkeypatch.setattr(http, "get_cf_user_agent_for_domain", lambda _domain: None)
+    monkeypatch.setattr(http, "get_bypassed_page", lambda *_args: "BYPASSED")
+    monkeypatch.setattr(http, "get_proxies", lambda _url: {})
+    monkeypatch.setattr(http.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(http.network, "get_aa_base_url", lambda: "https://annas-archive.li")
+    monkeypatch.setattr(http.network, "is_aa_auto_mode", lambda: True)
+
+    calls: list[str] = []
+
+    def fake_get(url: str, **_kwargs):
+        calls.append(url)
+        return _FakeResponse(302, headers={"Location": "/challenge"}, url=url)
+
+    monkeypatch.setattr(http.requests, "get", fake_get)
+
+    html = http.html_get_page(
+        "https://annas-archive.li/search?q=test",
+        selector=_DummySelector(["https://annas-archive.li"]),
+        retry=2,
+        allow_bypasser_fallback=True,
+    )
+
+    assert html == "BYPASSED"
+    assert len(calls) == 6
+
+
 def test_html_get_page_locked_aa_does_not_fail_over_on_cross_host_redirect(monkeypatch):
     import bookflow.download.http as http
 

@@ -22,6 +22,7 @@ from bookflow.core.request_state import (
     profile_snapshot,
     transition_request,
 )
+from bookflow.core.requests_service import RequestServiceError, enforce_request_limits
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -222,6 +223,15 @@ class RequestWorkflowService:
             if existing is not None:
                 conn.commit()
                 return dict(existing)
+
+            try:
+                enforce_request_limits(conn, user_id=user_id)
+            except RequestServiceError as exc:
+                _raise_domain(
+                    str(exc),
+                    code=exc.code or "request_limit_reached",
+                    status_code=exc.status_code,
+                )
 
             entitled_file = self._available_entitled_file(
                 conn,

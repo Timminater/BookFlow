@@ -251,4 +251,5 @@ pyrightconfig.json
 .nvmrc
 .playwright-mcp/
 frontend-dist/
+/tools/kobo_patcher/bundled/*.exe*
 node_modules/

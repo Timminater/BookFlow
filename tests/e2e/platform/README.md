@@ -87,12 +87,10 @@ end-to-end (`docker compose up` + suite + teardown) and passes.
 | `full` | **real Chrome solves Cloudflare** + DoH + **real qBittorrent** download → /books (Moby-Dick) | 1,4,5 + DoH | **#284 #1030** #386 #1040 #214 | ✅ 6 passed |
 | *(every profile)* | boots healthy under PUID/PGID, no perm errors | 6 entrypoint | #171 #447 #801 | ✅ |
 
-> **The bypasser is download-time, not search-time.** Running the stack revealed
-> that bookflow fetches AA search/detail with `allow_bypasser_fallback=False`, so a
-> search behind Cloudflare returns 503 **regardless** of the bypasser; the bypasser
-> (internal Chrome or external FlareSolverr) only runs during a file *download*
-> (`use_bypasser=True`). The bypasser profiles therefore assert a *clean*
-> CF-gated-search failure, while the **`full` profile exercises the real end-to-end
+> **The bypasser also protects search and detail lookups.** BookFlow first tries
+> the configured AA mirrors directly and, after a 403 challenge, uses the internal
+> Chrome or external FlareSolverr bypasser. The disabled profile remains the
+> negative control, while the **`full` profile exercises the real end-to-end
 > CF solve**: AA search/detail are reachable, but the AA slow-download link points
 > at the gate, so downloading Moby-Dick forces the in-image headless Chromium to
 > detect the challenge, solve it (`_bypass_method_cdp_solve`), and fetch the file —

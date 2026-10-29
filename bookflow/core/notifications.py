@@ -52,7 +52,9 @@ class _AppriseClient(Protocol):
 
     def add(self, plugin: object) -> object: ...
 
-    def notify(self, *, title: str, body: str, notify_type: object) -> object: ...
+    def notify(
+        self, *, title: str, body: str, notify_type: object, attach: object = None
+    ) -> object: ...
 
 
 def _is_apprise_client(candidate: object) -> TypeGuard[_AppriseClient]:
@@ -89,6 +91,8 @@ class NotificationContext:
     admin_note: str | None = None
     error_message: str | None = None
     book_id: int | None = None
+    requesters: tuple[str, ...] = ()
+    cover_url: str | None = None
 
 
 def _normalize_urls(value: object) -> list[str]:
@@ -316,6 +320,24 @@ def _clean_text(value: object, fallback: str) -> str:
     return text or fallback
 
 
+def _requester_names(context: NotificationContext) -> list[str]:
+    candidates: Iterable[object] = context.requesters
+    if not context.requesters and context.username:
+        candidates = (context.username,)
+
+    names: list[str] = []
+    for candidate in candidates:
+        name = str(candidate or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _requested_by_line(context: NotificationContext) -> str:
+    names = _requester_names(context)
+    return f"\nRequested by: {', '.join(names)}" if names else ""
+
+
 def _render_message(context: NotificationContext) -> tuple[str, str]:
     event = context.event
     title = _clean_text(context.title, "Unknown title")
@@ -335,11 +357,34 @@ def _render_message(context: NotificationContext) -> tuple[str, str]:
             f'Request for "{title}" by {author} was rejected.{note_line}',
         )
     if event == NotificationEvent.DOWNLOAD_COMPLETE:
-        return "Download Complete", f'"{title}" by {author} downloaded successfully.'
+        return (
+            "Download Complete",
+            f'"{title}" by {author} downloaded successfully.{_requested_by_line(context)}',
+        )
 
     error_message = _clean_text(context.error_message, "")
     error_line = f"\nError: {error_message}" if error_message else ""
-    return "Download Failed", f'Failed to download "{title}" by {author}.{error_line}'
+    return (
+        "Download Failed",
+        f'Failed to download "{title}" by {author}.{error_line}{_requested_by_line(context)}',
+    )
+
+
+def _normalize_attachment_url(value: object) -> str | None:
+    url = str(value or "").strip()
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or any(character.isspace() for character in url)
+    ):
+        return None
+    return url
 
 
 def _plugin_label(plugin: object, fallback_scheme: str) -> str:
@@ -407,6 +452,7 @@ def _dispatch_to_apprise(
     title: str,
     body: str,
     notify_type: object,
+    attach: str | None = None,
 ) -> dict[str, Any]:
     import os
 
@@ -472,7 +518,34 @@ def _dispatch_to_apprise(
             valid_urls += 1
 
             try:
-                delivered = bool(apobj.notify(title=title, body=body, notify_type=notify_type))
+                attachment_url = _normalize_attachment_url(attach)
+                if attachment_url is None:
+                    delivered = bool(apobj.notify(title=title, body=body, notify_type=notify_type))
+                else:
+                    try:
+                        delivered = bool(
+                            apobj.notify(
+                                title=title,
+                                body=body,
+                                notify_type=notify_type,
+                                attach=attachment_url,
+                            )
+                        )
+                    except _APPRISE_DISPATCH_ERRORS:
+                        logger.warning(
+                            "Apprise cover attachment failed for %s; retrying without the cover",
+                            plugin_label,
+                        )
+                        delivered = False
+                    if not delivered:
+                        logger.warning(
+                            "Apprise cover attachment was not delivered for %s; "
+                            "retrying without the cover",
+                            plugin_label,
+                        )
+                        delivered = bool(
+                            apobj.notify(title=title, body=body, notify_type=notify_type)
+                        )
             except _APPRISE_DISPATCH_ERRORS as exc:
                 _log_apprise_records(apprise_records)
                 failed_delivery_urls += 1
@@ -586,7 +659,13 @@ def _send_apprise_event(
 ) -> dict[str, Any]:
     title, body = _render_message(context)
     notify_type = _resolve_notify_type(event)
-    return _dispatch_to_apprise(urls, title=title, body=body, notify_type=notify_type)
+    return _dispatch_to_apprise(
+        urls,
+        title=title,
+        body=body,
+        notify_type=notify_type,
+        attach=context.cover_url,
+    )
 
 
 def notify_admin(event: NotificationEvent, context: NotificationContext) -> None:
