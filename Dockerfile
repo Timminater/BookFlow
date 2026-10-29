@@ -131,7 +131,9 @@ WORKDIR /app
 # Install core Python dependencies first for better layer caching
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-default-groups
+    apt-get update && apt-get install -y --no-install-recommends build-essential libffi-dev && \
+    uv sync --locked --no-default-groups && \
+    apt-get purge -y --auto-remove build-essential libffi-dev && rm -rf /var/lib/apt/lists/*
 
 # Runtime dependencies are installed into /app/.venv during the build. Remove the
 # base image's system pip so stale installer CVEs do not ship in the final image.
@@ -264,3 +266,4 @@ ENV USING_EXTERNAL_BYPASSER=true
 RUN rm -f /usr/bin/uv /usr/bin/uvx
 
 CMD ["/app/entrypoint.sh"]
+
