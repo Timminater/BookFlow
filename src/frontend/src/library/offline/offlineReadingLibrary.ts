@@ -67,7 +67,8 @@ export class OfflineReadingLibrary {
     input: CacheFetchInput,
     protectedFileIds: ReadonlySet<number> = new Set(),
   ) {
-    const response = await this.fetcher(input.contentUrl, { credentials: 'include' });
+    const fetcher = this.fetcher;
+    const response = await fetcher(input.contentUrl, { credentials: 'include' });
     if (!response.ok) {
       throw new Error(`Unable to cache ${input.title}: ${response.status} ${response.statusText}`);
     }
@@ -133,7 +134,8 @@ export class OfflineReadingLibrary {
     if (!cached) return { changed: false, etag: null };
     const headers = new Headers();
     if (cached.etag) headers.set('If-None-Match', cached.etag);
-    const response = await this.fetcher(cached.contentUrl, { credentials: 'include', headers });
+    const fetcher = this.fetcher;
+    const response = await fetcher(cached.contentUrl, { credentials: 'include', headers });
     if (response.status === 304) return { changed: false, etag: cached.etag };
     if (!response.ok) {
       throw new Error(
