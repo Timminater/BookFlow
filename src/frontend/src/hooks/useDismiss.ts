@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useRef, type RefObject } from 'react';
+import { useEffect, useEffectEvent, type RefObject } from 'react';
 
 export const useDismiss = (
   isOpen: boolean,
@@ -9,8 +9,9 @@ export const useDismiss = (
     onClose();
   });
 
-  const refsRef = useRef(refs);
-  refsRef.current = refs;
+  const isInside = useEffectEvent((target: Node) =>
+    refs.some((ref) => ref.current?.contains(target)),
+  );
 
   useEffect(() => {
     if (!isOpen) {
@@ -23,7 +24,7 @@ export const useDismiss = (
         return;
       }
 
-      if (refsRef.current.some((ref) => ref.current?.contains(target))) {
+      if (isInside(target)) {
         return;
       }
 

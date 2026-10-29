@@ -350,6 +350,8 @@ function SettingsContentPanel({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = 0;
     }
+    // A tab change intentionally resets the scroll position.
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies
   }, [embedded, tab.name]);
 
   const updateCustomFieldUiState = useCallback((fieldKey: string, key: string, value: unknown) => {
@@ -410,6 +412,8 @@ function SettingsContentPanel({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = 0;
     }
+    // Entering or leaving a takeover intentionally resets scrolling.
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies
   }, [embedded, activeTakeOverFieldKey]);
 
   const visibleFields = useMemo(() => {

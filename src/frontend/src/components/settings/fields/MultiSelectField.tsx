@@ -51,7 +51,6 @@ export const MultiSelectField = ({
   onChange,
   disabled,
 }: MultiSelectFieldProps) => {
-  const { language } = useLanguage();
   const selected = fieldValue ?? EMPTY_SELECTION;
   // disabled prop is already computed by SettingsContent.getDisabledState()
   const isDisabled = disabled ?? false;
@@ -202,6 +201,24 @@ export const MultiSelectField = ({
       />
     );
   }
+  return (
+    <PillMultiSelectField
+      field={field}
+      value={selected}
+      onChange={onChange}
+      disabled={isDisabled}
+    />
+  );
+};
+
+const PillMultiSelectField = ({
+  field,
+  value: selected,
+  onChange,
+  disabled,
+}: MultiSelectFieldProps) => {
+  const { language } = useLanguage();
+  const isDisabled = disabled ?? false;
   const [isExpanded, setIsExpanded] = useState(false);
   // Initialize based on option count to avoid flash of expanded content
   const [needsCollapse, setNeedsCollapse] = useState(

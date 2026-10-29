@@ -1,4 +1,10 @@
-import { useCallback, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import {
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 
 import { useDependencyEffect } from '../../hooks/useMountEffect';
 import type { ReaderAdapterFactory } from '../adapters/unavailableAdapter';
@@ -56,7 +62,9 @@ export const BrowserReader = ({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  preferencesRef.current = preferences;
+  useLayoutEffect(() => {
+    preferencesRef.current = preferences;
+  }, [preferences]);
 
   const handleLocator = useCallback(
     (locator: ReaderLocator) => {
