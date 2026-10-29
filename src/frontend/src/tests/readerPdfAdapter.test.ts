@@ -37,9 +37,9 @@ describe('PDF reader position', () => {
         }),
         render,
       })),
-      destroy: vi.fn(async () => undefined),
     };
-    getDocument.mockReturnValue({ promise: Promise.resolve(documentProxy) });
+    const destroy = vi.fn(async () => undefined);
+    getDocument.mockReturnValue({ promise: Promise.resolve(documentProxy), destroy });
     const canvas = {
       className: '',
       width: 0,
@@ -79,5 +79,7 @@ describe('PDF reader position', () => {
       currentPage: 200,
       totalPages: 200,
     });
+    adapter.close();
+    expect(destroy).toHaveBeenCalledOnce();
   });
 });

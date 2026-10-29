@@ -1,6 +1,7 @@
 import {
   GlobalWorkerOptions,
   getDocument,
+  type PDFDocumentLoadingTask,
   type PDFDocumentProxy,
   type RenderTask,
 } from 'pdfjs-dist';
@@ -20,6 +21,7 @@ GlobalWorkerOptions.workerSrc = workerUrl;
 class PdfAdapter implements ReaderAdapter {
   readonly kind = 'fixed' as const;
   private document: PDFDocumentProxy | null = null;
+  private loadingTask: PDFDocumentLoadingTask | null = null;
   private container: HTMLElement | null = null;
   private canvas: HTMLCanvasElement | null = null;
   private page = 1;
@@ -39,6 +41,7 @@ class PdfAdapter implements ReaderAdapter {
       withCredentials: true,
       rangeChunkSize: 256 * 1024,
     });
+    this.loadingTask = task;
     this.document = await task.promise;
     const outline = await this.document.getOutline();
     this.toc = (outline ?? []).map((item, index) => ({
@@ -51,7 +54,8 @@ class PdfAdapter implements ReaderAdapter {
   close(): void {
     this.renderTask?.cancel();
     this.renderTask = null;
-    void this.document?.destroy();
+    void this.loadingTask?.destroy();
+    this.loadingTask = null;
     this.document = null;
     this.canvas?.remove();
     this.canvas = null;
