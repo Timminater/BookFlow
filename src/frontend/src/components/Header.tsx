@@ -590,6 +590,7 @@ export const Header = ({
               </span>
               <input
                 type="search"
+                name="catalog-search"
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
                 onFocus={() => searchQuery.trim().length >= 2 && setSearchOpen(true)}

@@ -11,6 +11,13 @@ import {
 import { v1Api } from '../services/v1Api';
 
 const accountId = 'user-42';
+const receiverSensitiveFetch: ContentFetcher = async function (this: unknown) {
+  if (this !== undefined) throw new TypeError('Illegal invocation');
+  return new Response(new Blob(['book']), {
+    status: 200,
+    headers: { ETag: '"v1"' },
+  });
+};
 const baseInput = (fileId: number): CacheBookInput => ({
   accountId,
   bookId: 7,
@@ -37,6 +44,19 @@ afterEach(() => {
 });
 
 describe('OfflineReadingLibrary', () => {
+  it('downloads and refreshes through a fetcher without a receiver', async () => {
+    const store = new MemoryOfflineReadingStore();
+    const library = new OfflineReadingLibrary(store, receiverSensitiveFetch, () => timestampAt(0));
+    const { content: _content, ...input } = baseInput(1);
+
+    await library.downloadAndCache(input);
+    expect(await store.getBook(accountId, 1)).toMatchObject({ etag: '"v1"' });
+    await expect(library.refreshBook(accountId, 1)).resolves.toEqual({
+      changed: true,
+      etag: '"v1"',
+    });
+  });
+
   it('keeps only the three most recently active incomplete books', async () => {
     const store = new MemoryOfflineReadingStore();
     let index = 0;
