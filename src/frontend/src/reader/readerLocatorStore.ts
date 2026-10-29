@@ -21,6 +21,9 @@ export const loadReaderLocator = (bookId: number, fileId: number): ReaderLocator
     return {
       value: value.value,
       progression: Math.max(0, Math.min(1, value.progression)),
+      ...('updatedAt' in value && typeof value.updatedAt === 'string'
+        ? { updatedAt: value.updatedAt }
+        : {}),
     };
   } catch {
     return null;
@@ -29,7 +32,10 @@ export const loadReaderLocator = (bookId: number, fileId: number): ReaderLocator
 
 export const saveReaderLocator = (bookId: number, fileId: number, locator: ReaderLocator): void => {
   try {
-    window.localStorage.setItem(locatorKey(bookId, fileId), JSON.stringify(locator));
+    window.localStorage.setItem(
+      locatorKey(bookId, fileId),
+      JSON.stringify({ ...locator, updatedAt: locator.updatedAt ?? new Date().toISOString() }),
+    );
   } catch {
     // Exact position is a convenience. The server-side percentage still syncs.
   }

@@ -13,7 +13,44 @@ from bookflow.core.db_migrations import (
     SQLiteMigrator,
     UnsupportedSchemaVersionError,
 )
+from bookflow.core.kobo_db import KOB0_DB_SQL
 from bookflow.core.user_db import UserDB
+
+
+def test_released_kobo_migration_is_immutable():
+    assert hashlib.sha256(KOB0_DB_SQL.encode()).hexdigest() == (
+        "5252576f2bc9c0a17d57053c539e09586194e950d2ac7fc02ab390f7bd97b2a8"
+    )
+
+
+@pytest.mark.parametrize("fresh_v129", [False, True])
+def test_kobo_reading_states_upgrade_preserves_released_journal(tmp_path, fresh_v129):
+    db_path = tmp_path / "upgrade.db"
+    database = UserDB(str(db_path))
+    database.initialize()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM schema_migrations WHERE version = 31")
+        if fresh_v129:
+            conn.execute(
+                "UPDATE schema_migrations SET checksum = ? WHERE version = 8",
+                ("e211e37e7cf67f74aa97266a1d9f1f28ab13c61f79585a0a3971ee9f01b1f9f0",),
+            )
+        else:
+            conn.execute("DROP TABLE kobo_reading_states")
+        conn.execute("INSERT INTO users (username, role) VALUES ('existing', 'user')")
+        journal = conn.execute("SELECT * FROM schema_migrations ORDER BY version").fetchall()
+    database.initialize()
+    database.initialize()
+    with sqlite3.connect(db_path) as conn:
+        assert (
+            conn.execute(
+                "SELECT * FROM schema_migrations WHERE version <= 30 ORDER BY version"
+            ).fetchall()
+            == journal
+        )
+        assert conn.execute("SELECT username FROM users").fetchall() == [("existing",)]
+        assert conn.execute("SELECT COUNT(*) FROM kobo_reading_states").fetchone() == (0,)
+        assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
 
 def checksum(label: str) -> str:

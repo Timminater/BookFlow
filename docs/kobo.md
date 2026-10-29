@@ -74,6 +74,41 @@ Automated tests exercise initialization, auth, paginated/delta sync, download,
 bookmarks, cross-user isolation, the production browser-origin guard and patcher
 login/rollback. These are distinct from physical firmware acceptance.
 
-Planned physical acceptance: Kobo Glo, firmware 4.38.23684, using the Marion
-account. Record the observed result after installing the candidate; automated
-tests alone must not be described as a successful physical reader sync.
+### September 2026 compatibility review
+
+Compared against [Calibre-Web](https://github.com/janeczku/calibre-web/blob/master/cps/kobo.py)
+and [Grimmory's Kobo services](https://github.com/grimmory-tools/grimmory/tree/develop/backend/src/main/java/org/booklore/service/kobo).
+These independently implement the unofficial device API; matching their wire
+shapes does not replace testing on physical firmware.
+
+| Area | BookFlow behavior |
+| --- | --- |
+| Bootstrap | Explicit OneStore flags, library-book resource and authenticated affiliate/assets/deals/subscription compatibility routes. |
+| Authentication | Personal revocable token, device authentication and refresh, local OAuth host and OIDC discovery/token bootstrap; no forwarding of credentials to Kobo. |
+| Library | Stable book IDs, signed paginated delta cursor, metadata/downloads, covers and deletion tombstones. |
+| Reading progress | Newest reading timestamp wins in both directions, including intentional backwards moves; stale offline writes cannot replace newer reading. |
+| Web resume | Server timestamps are compared with local saved positions; Kobo updates clear obsolete web CFIs or replace them with translated CFIs. |
+| Sentence positions | The pinned kepubify converter exports a separate cached KEPUB. Original EPUB CFIs map to real KoboSpan IDs and back, only when chapter text matches. Unsupported locators/editions retain percentage-only progress. |
+| Collections | BookFlow has no collection model to synchronize; tags remain empty. |
+| Store services | Purchases, subscriptions, wishlist and loyalty functionality are not implemented; optional device requests receive the explicit compatibility shapes. |
+
+KEPUB metadata size and downloaded bytes come from the same derived file. The
+original library EPUB and its file ID remain unchanged. Readers which already
+downloaded the old EPUB may need to remove its local download and download the
+book again to obtain sentence markers; do not delete their library entitlement.
+
+Temporary converter output must end in `.kepub.epub`: kepubify treats a plain
+`.tmp.epub` output as a copy operation. The conversion cache contract is versioned
+to bypass older unchanged-EPUB results without deleting the original files.
+
+Physical acceptance is pending for Marion's Kobo (reported firmware
+4.38.23828). Test web-to-reader and reader-to-web after closing the book and
+synchronizing, including a backwards move. Record the observed result;
+automated tests alone are not proof of successful physical reader sync.
+
+The first September 27 device retest still stopped after initialization despite
+HTTP 200. The missing `oauth_host` bootstrap was then added based on
+[Calibre-Web-Automated #1418](https://github.com/crocodilestick/Calibre-Web-Automated/issues/1418)
+and [BookOrbit #766](https://github.com/bookorbit/bookorbit/issues/766).
+Discovery returns endpoint configuration, not a token response; all identity
+compatibility endpoints remain protected by the personal URL token.

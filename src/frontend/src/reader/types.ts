@@ -23,6 +23,8 @@ export interface ReaderTocItem {
 }
 
 export interface ReaderLocator {
+  /** Time of the reading action, used to reconcile local and server positions. */
+  updatedAt?: string;
   /** EPUB CFI for reflowable books, page number for fixed-layout books. */
   value: string;
   progression: number;

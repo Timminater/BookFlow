@@ -56,6 +56,11 @@ def _successful_runner(conversion_calls: list[list[str]], delay_seconds: float =
         if delay_seconds:
             time.sleep(delay_seconds)
         output = Path(command[command.index("--output") + 1])
+        # The real CLI copies rather than converts if the output ends .epub
+        # without .kepub; emulate that behavior instead of hiding regressions.
+        if not output.name.endswith(".kepub.epub"):
+            output.write_bytes(Path(command[-1]).read_bytes())
+            return subprocess.CompletedProcess(command, 0, "copied", "")
         _write_epub(output, "converted")
         return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -77,6 +82,7 @@ def test_cache_hit_runs_one_conversion_and_uses_argument_array(tmp_path: Path, m
     assert first.cache_hit is False
     assert second.cache_hit is True
     assert first.output_path == second.output_path
+    assert first.output_path.read_bytes() != source.read_bytes()
     assert len(conversion_calls) == 1
     assert conversion_calls[0][0].endswith("kepubify")
     assert "--hyphenate" in conversion_calls[0]

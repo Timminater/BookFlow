@@ -5,6 +5,9 @@ not the former synthetic BookFlow contract. Physical firmware acceptance is
 recorded separately in docs/kobo.md.
 """
 
+import base64
+import json
+import sqlite3
 from urllib.parse import urlsplit
 
 import pytest
@@ -16,10 +19,11 @@ from bookflow.core.kobo_protocol import book_uuid
 from bookflow.core.kobo_routes import register_kobo_routes
 
 from .test_auth_api import main_module as main_module
+from .test_kobo_positions import write_epub
 from .test_kobo_services import kobo_fixture as kobo_fixture
 
 
-def _reader(fixture, guard=None):
+def _reader(fixture, guard=None, cover_fetcher=None, file_exporter=None):
     app = Flask(__name__)
     if guard:
         app.before_request(guard)
@@ -29,7 +33,8 @@ def _reader(fixture, guard=None):
         sync_service=fixture["sync"],
         allowed_file_roots=(fixture["storage_root"],),
         tls_guard=lambda: True,
-        cover_fetcher=lambda *_: (b"image", "image/jpeg"),
+        cover_fetcher=cover_fetcher or (lambda *_: (b"image", "image/jpeg")),
+        file_exporter=file_exporter,
     )
     user_id = fixture["user"]["id"]
     fixture["sync"].set_book(
@@ -37,6 +42,97 @@ def _reader(fixture, guard=None):
     )
     token = fixture["tokens"].issue_token(user_id=user_id)
     return app.test_client(), f"/api/kobo/{token.token}"
+
+
+def test_exported_download_and_bidirectional_sentence_position(kobo_fixture):
+    original = kobo_fixture["storage_root"] / "book.epub"
+    exported = kobo_fixture["storage_root"] / "converted.kepub.epub"
+    write_epub(original, "<p>First. Second.</p>")
+    write_epub(
+        exported, '<p><span id="kobo.1.1">First. </span><span id="kobo.1.2">Second.</span></p>'
+    )
+
+    def export(user_id, row):
+        assert user_id == kobo_fixture["user"]["id"]
+        return {
+            **row,
+            "storage_path": str(exported),
+            "file_format": "kepub",
+            "size_bytes": exported.stat().st_size,
+        }
+
+    client, base = _reader(kobo_fixture, file_exporter=export)
+    book_id, user_id = kobo_fixture["book_id"], kobo_fixture["user"]["id"]
+    with sqlite3.connect(kobo_fixture["db_path"]) as conn:
+        conn.execute(
+            "INSERT INTO user_reading_progress(user_id, book_id, progress, active, source, revision, updated_at, reader_updated_at, file_id, locator_json) VALUES (?, ?, 50, 1, 'web', 1, ?, ?, ?, ?)",
+            (
+                user_id,
+                book_id,
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-01T00:00:00+00:00",
+                kobo_fixture["file_id"],
+                json.dumps({"value": "epubcfi(/6/2!/4/2/1:7)", "progression": 0.5}),
+            ),
+        )
+    item = client.get(base + "/v1/library/sync").json[0]["NewEntitlement"]
+    download = item["BookMetadata"]["DownloadUrls"][0]
+    assert download["Format"] == "KEPUB"
+    assert (
+        download["Size"]
+        == len(client.get(urlsplit(download["Url"]).path).data)
+        == exported.stat().st_size
+    )
+    assert item["ReadingState"]["CurrentBookmark"]["Location"]["Value"] == "kobo.1.2"
+    response = client.put(
+        base + f"/v1/library/{book_uuid(book_id)}/state",
+        json={
+            "ReadingStates": [
+                {
+                    "CurrentBookmark": {
+                        "ProgressPercent": 20,
+                        "LastModified": "2026-01-02T00:00:00Z",
+                        "Location": {
+                            "Type": "KoboSpan",
+                            "Value": "kobo.1.1",
+                            "Source": "OEBPS/Text/chapter.xhtml",
+                        },
+                    }
+                }
+            ]
+        },
+    )
+    assert response.status_code == 200
+    state = kobo_fixture["sync"].get_reading_state(user_id=user_id, book_id=book_id)
+    assert state["progress"] == 20
+    assert state["file_id"] == kobo_fixture["file_id"]
+    assert json.loads(state["locator_json"])["value"] == "epubcfi(/6/2!/4/2/1:0)"
+    assert original.read_bytes() != exported.read_bytes()
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_reader_resolves_catalog_cover_proxy(kobo_fixture, valid):
+    source = "https://example.org/cover.jpg"
+    encoded = base64.urlsafe_b64encode(source.encode()).decode() if valid else "%%%"
+    with sqlite3.connect(kobo_fixture["db_path"]) as conn:
+        conn.execute(
+            "UPDATE books SET cover_url = ? WHERE id = ?",
+            (f"/api/covers/provider_book?url={encoded}", kobo_fixture["book_id"]),
+        )
+    calls = []
+
+    def fetch(cache_id, url):
+        calls.append(url)
+        return b"jpeg", "image/jpeg"
+
+    client, base = _reader(kobo_fixture, cover_fetcher=fetch)
+    identifier = book_uuid(kobo_fixture["book_id"])
+    response = client.get(base + f"/v1/covers/{identifier}/600/800/image.jpg")
+    assert response.status_code == (200 if valid else 404)
+    assert calls == ([source] if valid else [])
+    if valid:
+        assert response.data == b"jpeg"
+        assert response.content_type == "image/jpeg"
 
 
 def test_reader_discovers_resources_authenticates_and_downloads(kobo_fixture):
@@ -73,6 +169,80 @@ def test_reader_discovers_resources_authenticates_and_downloads(kobo_fixture):
     assert client.get(urlsplit(cover).path).data == b"image"
     assert client.get(base).json["Resources"]
     assert sync.headers["Cache-Control"] == "private, no-store"
+
+
+def test_reader_bootstrap_advertises_and_serves_optional_resources(kobo_fixture):
+    client, base = _reader(kobo_fixture)
+    resources = client.get(base + "/v1/initialization").json["Resources"]
+    assert resources["use_one_store"] == "True"
+    assert resources["kobo_onestorelibrary_enabled"] == "False"
+    oauth = urlsplit(resources["oauth_host"]).path
+    discovery = client.get(oauth + "/.well-known/openid-configuration")
+    assert discovery.status_code == 200
+    assert "access_token" not in discovery.json
+    assert urlsplit(discovery.json["issuer"]).path == oauth
+    for key in ("authorization_endpoint", "token_endpoint"):
+        path = urlsplit(discovery.json[key]).path
+        response = client.post(path, data={"grant_type": "refresh_token", "refresh_token": "old"})
+        assert response.status_code == 200
+        assert response.json["access_token"] == response.json["AccessToken"]
+        assert response.json["expires_in"] > 0
+        assert client.post(path.replace(base, "/api/kobo/invalid")).status_code == 401
+    assert client.get(oauth + "/jwks").json == {"keys": []}
+    assert (
+        client.get(
+            oauth.replace(base, "/api/kobo/invalid") + "/.well-known/openid-configuration"
+        ).status_code
+        == 401
+    )
+    for key in ("affiliaterequest", "assets", "deals", "book_subscription"):
+        path = urlsplit(resources[key]).path
+        assert path.startswith(base + "/")
+        assert client.get(path).status_code == 200
+        assert client.get(path.replace(base, "/api/kobo/invalid")).status_code == 401
+    assert client.post(base + "/v1/affiliate", json={}).json == {}
+    tests = client.post(
+        base + "/v1/analytics/gettests", json={}, headers={"X-Kobo-UserKey": "reader-key"}
+    )
+    assert tests.json == {"Result": "Success", "TestKey": "reader-key", "Tests": {}}
+    assert client.get(base + "/v1/user/loyalty/benefits").json == {"Benefits": {}}
+    assert client.get(base + "/v1/assets").json == {"Assets": []}
+    assert client.get(base + "/v1/not-implemented").status_code == 404
+    identifier = book_uuid(kobo_fixture["book_id"])
+    assert (
+        client.get(base + f"/v1/user/library/books/{identifier}").json["RevisionId"] == identifier
+    )
+
+
+def test_kobo_progress_uses_timestamp_and_invalidates_old_browser_locator(kobo_fixture):
+    client, base = _reader(kobo_fixture)
+    user_id, book_id = kobo_fixture["user"]["id"], kobo_fixture["book_id"]
+    kobo_fixture["sync"].set_reading_state(user_id=user_id, book_id=book_id, progress=60)
+    with sqlite3.connect(kobo_fixture["db_path"]) as conn:
+        conn.execute(
+            "UPDATE user_reading_progress SET source='web', reader_updated_at=?, locator_json=?, file_id=?",
+            ("2026-01-01T00:00:00+00:00", '{"value":"old-cfi"}', kobo_fixture["file_id"]),
+        )
+    url = base + f"/v1/library/{book_uuid(book_id)}/state"
+    for progress, modified in ((20, "2026-01-02T00:00:00Z"), (90, "2026-01-01T00:00:00Z")):
+        response = client.put(
+            url,
+            json={
+                "ReadingStates": [
+                    {
+                        "CurrentBookmark": {"ProgressPercent": progress, "LastModified": modified},
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 200
+    with sqlite3.connect(kobo_fixture["db_path"]) as conn:
+        row = conn.execute(
+            "SELECT progress, locator_json, reader_updated_at FROM user_reading_progress WHERE user_id=? AND book_id=?",
+            (user_id, book_id),
+        ).fetchone()
+    assert row == (20, None, "2026-01-02T00:00:00+00:00")
+    assert client.get(url).json[0]["CurrentBookmark"]["ProgressPercent"] == 20
 
 
 def test_idle_sync_keeps_cursor_and_new_change_is_delivered(kobo_fixture):

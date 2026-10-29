@@ -15,6 +15,7 @@ from bookflow.core.kepub_converter import (
     EPUB_MIME_TYPE,
     KepubCatalogService,
     KepubConversionResult,
+    kepub_options_hash,
 )
 from bookflow.core.kobo_services import KoboSyncService, TokenService
 from bookflow.core.kobo_settings_routes import register_kobo_settings_routes
@@ -51,7 +52,7 @@ class _FakeConverter:
         self.calls += 1
         source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
         assert expected_source_sha256 == source_sha256
-        options_hash = hashlib.sha256(b"{}").hexdigest()
+        options_hash = kepub_options_hash()
         cache_key = hashlib.sha256(
             f"{source_sha256}\0kepubify test\0{options_hash}".encode()
         ).hexdigest()
