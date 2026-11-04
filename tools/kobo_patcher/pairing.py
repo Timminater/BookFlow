@@ -11,6 +11,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+# Cloudflare's Browser Integrity Check rejects urllib's default "Python-urllib"
+# agent with error 1010, so BookFlow behind Cloudflare never sees the request.
+USER_AGENT = "BookFlowKoboPatcher/1"
+
 
 class PairingError(ValueError):
     """A pairing code or pairing-server exchange is invalid."""
@@ -103,7 +107,11 @@ class PairingClient:
             f"{self.code.origin}{path}",
             body,
             method=method,
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": USER_AGENT,
+            },
         )
         try:
             with urlopen(request, timeout=self.timeout) as response:  # nosec B310: origin is user-confirmed

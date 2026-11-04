@@ -8,7 +8,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPCookieProcessor, HTTPRedirectHandler, Request, build_opener
 
-from .pairing import PairingCode, PairingError, parse_pairing_code
+from .pairing import USER_AGENT, PairingCode, PairingError, parse_pairing_code
 
 
 class AccountError(ValueError):
@@ -35,7 +35,7 @@ class BookFlowAccount:
         body = json.dumps(data).encode("utf-8") if data is not None else None
         request = Request(self.origin + path, body, headers={
             "Accept": "application/json", "Content-Type": "application/json",
-            "X-BookFlow-CSRF": "1",
+            "X-BookFlow-CSRF": "1", "User-Agent": USER_AGENT,
         })
         try:
             with self.opener.open(request, timeout=20) as response:

@@ -39,6 +39,23 @@ def test_pairing_code_rejects_unsafe_or_non_origin_urls(origin):
         )
 
 
+def test_pairing_requests_send_a_named_user_agent(monkeypatch):
+    import io
+
+    from kobo_patcher import pairing as pairing_module
+
+    sent = []
+
+    def fake_urlopen(request, timeout):
+        sent.append(request)
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(pairing_module, "urlopen", fake_urlopen)
+    client = PairingClient(PairingCode("code", "https://books.example", "id", 4_000_000_000, 1))
+    client._request("POST", "/api/kobo-pairing/claim", {})
+    assert sent[0].get_header("User-agent") == "BookFlowKoboPatcher/1"
+
+
 def test_complete_refuses_an_endpoint_from_a_different_origin(monkeypatch):
     pairing = PairingCode("code", "https://books.example", "id", 4_000_000_000, 1)
     client = PairingClient(pairing)

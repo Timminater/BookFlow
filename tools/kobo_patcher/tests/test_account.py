@@ -22,6 +22,7 @@ def test_login_verifies_account_and_does_not_keep_password(monkeypatch):
     payload = json.loads(calls[0].data)
     assert payload["remember_me"] is False
     assert calls[0].get_header("X-bookflow-csrf") == "1"
+    assert all(call.get_header("User-agent") == "BookFlowKoboPatcher/1" for call in calls)
     assert calls[1].full_url == "https://books.example/api/auth/check"
     assert "test-only-password" not in repr(vars(account))
     account.clear()
