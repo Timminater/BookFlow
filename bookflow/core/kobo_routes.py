@@ -631,7 +631,12 @@ def register_kobo_routes(
 
     @blueprint.post("/<token>/v1/library/<book_identifier>")
     def store_claim(token: str, book_identifier: str) -> tuple[Response, int] | Response:
-        """The product page's free "get" button: add the book to the library and the reader."""
+        """The product page's free "get" button.
+
+        A book with a file goes to the library and the reader at once. A book
+        without one (most Bestseller 60 titles) becomes a request that adds it
+        to the reader once BookFlow has imported a file.
+        """
         user_id, failure = authenticate(token)
         if failure is not None:
             return failure
@@ -639,12 +644,19 @@ def register_kobo_routes(
         book = discover_book(book_identifier)
         if book is None or discover_service is None:
             return jsonify({"code": "not_found"}), 404
+        book_id = int(book["id"])
         try:
-            book_id, file_id = discover_service.claim(user_id=user_id, book_id=int(book["id"]))
+            book_id, file_id = discover_service.claim(user_id=user_id, book_id=book_id)
             sync_service.enable_user(user_id=user_id)
             sync_service.set_book(user_id=user_id, book_id=book_id, file_id=file_id, source="kobo")
-        except kobo_discover.DiscoverError, KoboEntitlementError:
+        except KoboEntitlementError:
             return jsonify({"code": "unavailable", "message": "This book has no file yet"}), 409
+        except kobo_discover.DiscoverError:
+            try:
+                sync_service.enable_user(user_id=user_id)
+                discover_service.request(user_id=user_id, book_id=book_id)
+            except kobo_discover.DiscoverError:
+                return jsonify({"code": "unavailable", "message": "This book has no file yet"}), 409
         return jsonify(kobo_protocol.entitlement(book_id, datetime.now(UTC)))
 
     @blueprint.get("/<token>/v1/library/tags")

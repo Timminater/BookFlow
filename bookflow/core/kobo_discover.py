@@ -18,7 +18,11 @@ from uuid import UUID
 from bookflow.core.bestseller_service import LIST_DEFINITIONS, BestsellerSuggestionService
 from bookflow.core.book_groups import equivalent_book_ids
 from bookflow.core.catalog_monitor_service import CatalogMonitorService
+from bookflow.core.durable_jobs import DurableJobService
 from bookflow.core.library_service import LibraryService
+from bookflow.core.release_profile_service import ReleaseProfileService
+from bookflow.core.request_workflow_service import RequestWorkflowError, RequestWorkflowService
+from bookflow.core.web_push_events import enqueue_web_push
 
 _LIST_PREFIX = "bf00d15c-0000-4000-8000-"
 MAX_PAGE_SIZE = 100
@@ -74,8 +78,8 @@ class DiscoverPage:
 class KoboDiscoverService:
     """Discover rows and product pages for one user.
 
-    Only ``claim`` changes state, and only for the requesting user: it adds an
-    available catalog book to their library, exactly like the web catalog does.
+    Only ``claim`` and ``request`` change state, and only for the requesting
+    user, exactly like the web catalog's add and request actions.
     """
 
     def __init__(
@@ -240,3 +244,50 @@ class KoboDiscoverService:
         if row is None:
             raise DiscoverError("This book has no EPUB for the reader")
         return int(row["book_id"]), int(row["id"])
+
+    def request(self, *, user_id: int, book_id: int) -> dict[str, Any]:
+        """Request a book that has no file yet, as ``POST /api/v1/requests`` does.
+
+        Uses the default active release profile and asks for the book to be added
+        to the reader once a file is imported. Admins and auto-approved users start
+        the search at once; other requests wait for an admin, as on the website.
+        """
+        profiles = ReleaseProfileService(self._db_path).list(active_only=True)
+        if not profiles:
+            raise DiscoverError("No release profile is configured")
+        try:
+            created = RequestWorkflowService(self._db_path).create_request(
+                user_id=user_id,
+                book_id=book_id,
+                profile_id=int(profiles[0]["id"]),
+                note="Aangevraagd vanaf de Kobo",
+                add_to_kobo_when_available=True,
+                reject_if_available=True,
+            )
+        except RequestWorkflowError as exc:
+            raise DiscoverError(str(exc)) from exc
+        conn = self._connect()
+        try:
+            title = conn.execute("SELECT title FROM books WHERE id = ?", (book_id,)).fetchone()
+        finally:
+            conn.close()
+        if title is not None:
+            enqueue_web_push(
+                self._db_path,
+                user_id=user_id,
+                event_type="request.status",
+                payload={
+                    "title": str(title["title"]),
+                    "book_id": book_id,
+                    "status": str(created["status"]),
+                    "url": f"/catalog/{book_id}",
+                },
+                event_key=f"request:{created['id']}:{created['status']}",
+            )
+        if created.get("status") == "approved" and created.get("request_process_id") is not None:
+            DurableJobService(self._db_path).enqueue(
+                job_key=f"search-request:{created['request_process_id']}",
+                job_type="search_request",
+                payload={"request_process_id": created["request_process_id"]},
+            )
+        return created

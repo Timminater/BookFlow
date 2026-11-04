@@ -9,6 +9,7 @@ from flask import Flask
 from bookflow.core.kobo_discover import KoboDiscoverService
 from bookflow.core.kobo_protocol import book_uuid, store_book
 from bookflow.core.kobo_routes import register_kobo_routes
+from bookflow.core.release_profile_service import ReleaseProfileService
 
 from .test_kobo_services import kobo_fixture as kobo_fixture
 
@@ -266,11 +267,61 @@ def test_get_button_adds_catalog_book_to_library_and_reader(kobo_fixture):
         if "NewEntitlement" in change
     }
 
-    bestseller = book_uuid(reader["bestseller_id"])
-    assert client.post(base + f"/v1/library/{bestseller}", json={}).status_code == 409
     hidden = book_uuid(reader["hidden_id"])
     assert client.post(base + f"/v1/library/{hidden}", json={}).status_code == 404
     assert client.post(f"/api/kobo/invalid/v1/library/{catalog}", json={}).status_code == 401
+
+
+def test_get_button_requests_a_bestseller_without_a_file(kobo_fixture):
+    reader = _discover_reader(kobo_fixture)
+    client, base = reader["client"], reader["base"]
+    db_path = kobo_fixture["db_path"]
+    user_id = kobo_fixture["user"]["id"]
+    bestseller = book_uuid(reader["bestseller_id"])
+
+    # Without an active release profile there is nothing to request with.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE release_profiles SET is_default = 0, is_active = 0")
+    assert client.post(base + f"/v1/library/{bestseller}", json={}).status_code == 409
+
+    ReleaseProfileService(str(db_path)).create(name="Standaard", config=None, is_default=True)
+    response = client.post(base + f"/v1/library/{bestseller}", json={})
+    assert response.status_code == 200
+    assert response.json["Id"] == bestseller
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        requested = conn.execute(
+            "SELECT status, note, add_to_kobo_when_available FROM requests"
+            " WHERE user_id = ? AND book_id = ?",
+            (user_id, reader["bestseller_id"]),
+        ).fetchone()
+        searches = conn.execute(
+            "SELECT COUNT(*) FROM background_jobs WHERE job_type = 'search_request'"
+        ).fetchone()[0]
+    assert dict(requested) == {
+        "status": "pending_approval",
+        "note": "Aangevraagd vanaf de Kobo",
+        "add_to_kobo_when_available": 1,
+    }
+    # A pending request waits for an admin before anything is searched.
+    assert searches == 0
+    # Pressing again reuses the active request.
+    assert client.post(base + f"/v1/library/{bestseller}", json={}).status_code == 200
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 1
+
+    # An admin's request is approved at once and starts the search.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE users SET role = 'admin' WHERE id = ?", (kobo_fixture["other_user"]["id"],)
+        )
+    other = client.post(reader["other_base"] + f"/v1/library/{bestseller}", json={})
+    assert other.status_code == 200
+    with sqlite3.connect(db_path) as conn:
+        searches = conn.execute(
+            "SELECT COUNT(*) FROM background_jobs WHERE job_type = 'search_request'"
+        ).fetchone()[0]
+    assert searches == 1
 
 
 def test_store_book_keeps_series_and_omits_empty_values():

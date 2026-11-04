@@ -123,7 +123,7 @@ Other store pages the reader opens from Discover:
 | `products/books/{id}` (product page) | The book, when it has an imported file or is in Bestseller 60. |
 | `products/{id}/recommendations` | Other catalog books by the same author. |
 | `products?q=` (store search) | The catalog search used by the website. |
-| `POST library/{id}` (the free "get" button) | Adds the book to the library and the Kobo sync list; the next sync downloads it. A Bestseller 60 book without a file answers 409. |
+| `POST library/{id}` (the free "get" button) | A book with an EPUB goes to the library and the Kobo sync list; the next sync downloads it. A book without a file (most Bestseller 60 titles) becomes a request with the default release profile and "add to Kobo when available", following the same approval rules as the website. Without an active release profile it answers 409. |
 | `products/{id}/reviews`, `nextread`, `dailydeal`, `user/recommendations`, `user/wishlist` | Empty answers in the store's shape. |
 
 Categories and per-product prices still answer 404; their shapes need a Kobo
