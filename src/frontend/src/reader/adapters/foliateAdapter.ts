@@ -174,6 +174,7 @@ class FoliateAdapter implements ReaderAdapter {
     const view = document.createElement('foliate-view') as FoliateView;
     view.className = 'block h-full w-full';
     // CustomEvent.detail is part of foliate's public relocate event contract.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
     this.relocateHandler = ((event: CustomEvent<FoliateLocation>) => {
       const locator = locatorFromLocation(event.detail);
       if (!locator) return;
@@ -191,6 +192,7 @@ class FoliateAdapter implements ReaderAdapter {
       // hiding required document failures. Fixed-layout publications also need
       // a safe fit-to-page stylesheet when their authored CSS cannot be loaded.
       // CustomEvent.detail is part of foliate's public transform event contract.
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
       this.transformHandler = ((event: CustomEvent<FoliateTransformDetail>) => {
         const detail = event.detail;
         const name = detail.name ?? 'unknown';
