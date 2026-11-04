@@ -31,11 +31,11 @@ def _discover_reader(fixture):
         )
         catalog_id = conn.execute(
             "INSERT INTO books (metadata_provider, provider_book_id, title, author, cover_url)"
-            " VALUES ('test', 'catalog-only', 'Catalog Only', 'Someone', 'https://covers.invalid/c')"
+            " VALUES ('test', 'catalog-only', 'Catalog Only', 'BookFlow', 'https://covers.invalid/c')"
         ).lastrowid
         conn.execute(
             "INSERT INTO book_files (book_id, storage_path, file_format, size_bytes, sha256,"
-            " import_status) VALUES (?, ?, 'epub', 1, ?, 'imported')",
+            " import_status, content_type) VALUES (?, ?, 'epub', 1, ?, 'imported', 'ebook')",
             (catalog_id, str(fixture["storage_root"] / "other.epub"), "b" * 64),
         )
         bestseller_id = conn.execute(
@@ -144,8 +144,16 @@ def test_row_page_uses_store_book_shape_and_paging(kobo_fixture):
     assert beyond["TotalItemCount"] == 2
     assert beyond["TotalPageCount"] == 2
 
-    for unknown in ("bf00d15c-0000-4000-8000-0000000000ff", "not-a-uuid", identifier):
+    for unknown in ("bf00d15c-0000-4000-8000-0000000000ff", "not-a-uuid"):
         assert client.get(base + f"/v1/products/featured/{unknown}").status_code == 404
+    # A remembered Kobo Store list ("Top 50 Books") falls back to Bestseller 60.
+    top50 = client.get(
+        base + "/v1/products/featured/81844d90-8f90-40b0-98e4-f0cb6c3534e7"
+        "?page_index=0&page_size=2700&sort=Temperature&Filters=%7B%7D&TypesToInclude=book"
+    )
+    assert top50.status_code == 200
+    assert [item["Book"]["Title"] for item in top50.json["Items"]] == ["Finale"]
+    assert top50.json["ItemsPerPage"] == 100
     library_id = rows["Nog niet op je Kobo"]
     assert client.get(f"/api/kobo/invalid/v1/products/featured/{library_id}").status_code == 401
 
@@ -179,6 +187,90 @@ def test_wishlist_is_empty_and_resources_point_at_bookflow(kobo_fixture):
     assert wishlist.json["Items"] == []
     assert wishlist.json["TotalItemCount"] == 0
     assert client.get("/api/kobo/invalid/v1/user/wishlist").status_code == 401
+
+
+def test_kobo_plus_tab_and_store_pages_never_error(kobo_fixture):
+    reader = _discover_reader(kobo_fixture)
+    client, base = reader["client"], reader["base"]
+    kobo_plus = client.get(
+        base + "/v1/products/featuredforkoboplus/?page_index=0&page_size=100&TypesToInclude=book"
+    )
+    assert _names(kobo_plus) == _names(client.get(base + LISTS))
+    assert client.get(base + "/v1/products/dailydeal").json == []
+    identifier = book_uuid(kobo_fixture["book_id"])
+    reviews = client.get(base + f"/v1/products/{identifier}/reviews?PageSize=3")
+    assert reviews.json["Items"] == []
+    assert client.get(base + f"/v1/products/{identifier}/nextread").json["Items"] == []
+    shelf = client.get(base + "/v1/user/recommendations?page_index=0&page_size=50")
+    assert shelf.json["TotalItemCount"] == 0
+    for path in ("/v1/products/featuredforkoboplus/", "/v1/products/dailydeal"):
+        assert client.get("/api/kobo/invalid" + path).status_code == 401
+
+
+def test_product_page_search_and_more_by_author(kobo_fixture):
+    reader = _discover_reader(kobo_fixture)
+    client, base = reader["client"], reader["base"]
+    catalog = book_uuid(reader["catalog_id"])
+    product = client.get(base + f"/v1/products/books/{catalog}/?SendToBrowseHistory=true")
+    assert product.status_code == 200
+    assert product.json["Id"] == catalog
+    assert product.json["Title"] == "Catalog Only"
+    assert product.json["ApplicableSubscriptions"] == []
+    assert product.json["RatingHistogram"] == {"1": 0, "2": 0, "3": 0, "4": 0, "5": 0}
+    hidden = book_uuid(reader["hidden_id"])
+    assert client.get(base + f"/v1/products/books/{hidden}/").status_code == 404
+    assert client.get(base + "/v1/products/books/not-a-uuid/").status_code == 404
+    assert client.get(f"/api/kobo/invalid/v1/products/books/{catalog}/").status_code == 401
+
+    more = client.get(
+        base
+        + f"/v1/products/{book_uuid(kobo_fixture['book_id'])}/recommendations"
+        + "?page_index=0&page_size=100"
+    ).json
+    assert [item["Book"]["Title"] for item in more["Items"]] == ["Catalog Only"]
+
+    search = client.get(
+        base + "/v1/products?q=catalog&Filters=%7B%7D&page_index=0&page_size=200"
+        "&TypesToInclude=book,audiobook"
+    )
+    assert search.status_code == 200
+    assert [item["Book"]["Title"] for item in search.json["Items"]] == ["Catalog Only"]
+    assert search.json["SafeSearch"] is True
+    assert client.get(base + "/v1/products?q=").json["Items"] == []
+
+
+def test_get_button_adds_catalog_book_to_library_and_reader(kobo_fixture):
+    reader = _discover_reader(kobo_fixture)
+    client, base = reader["client"], reader["base"]
+    user_id = kobo_fixture["user"]["id"]
+    catalog = book_uuid(reader["catalog_id"])
+
+    response = client.post(base + f"/v1/library/{catalog}", json={})
+    assert response.status_code == 200
+    assert response.json["Id"] == catalog
+    with sqlite3.connect(kobo_fixture["db_path"]) as conn:
+        in_library = conn.execute(
+            "SELECT 1 FROM user_library WHERE user_id = ? AND book_id = ?",
+            (user_id, reader["catalog_id"]),
+        ).fetchone()
+    assert in_library is not None
+    on_reader = kobo_fixture["sync"].get_book_metadata(
+        user_id=user_id, book_id=reader["catalog_id"]
+    )
+    assert on_reader["file_format"] == "epub"
+    # The next sync delivers it to the reader.
+    synced = client.get(base + "/v1/library/sync").json
+    assert catalog in {
+        change["NewEntitlement"]["BookEntitlement"]["Id"]
+        for change in synced
+        if "NewEntitlement" in change
+    }
+
+    bestseller = book_uuid(reader["bestseller_id"])
+    assert client.post(base + f"/v1/library/{bestseller}", json={}).status_code == 409
+    hidden = book_uuid(reader["hidden_id"])
+    assert client.post(base + f"/v1/library/{hidden}", json={}).status_code == 404
+    assert client.post(f"/api/kobo/invalid/v1/library/{catalog}", json={}).status_code == 401
 
 
 def test_store_book_keeps_series_and_omits_empty_values():

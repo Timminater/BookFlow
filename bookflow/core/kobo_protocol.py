@@ -210,6 +210,16 @@ def store_book(book: dict[str, Any]) -> dict[str, Any]:
     return product
 
 
+def store_product(book: dict[str, Any]) -> dict[str, Any]:
+    """The product page for one book: the list ``Book`` plus the detail-only fields."""
+    return {
+        **store_book(book),
+        "Subtitle": str(book.get("subtitle") or ""),
+        "ApplicableSubscriptions": [],
+        "RatingHistogram": {str(stars): 0 for stars in range(1, 6)},
+    }
+
+
 def store_page(
     items: list[dict[str, Any]], *, total: int, page_index: int, page_size: int
 ) -> dict[str, Any]:

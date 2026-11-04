@@ -112,8 +112,22 @@ when the book has an imported file or belongs to the active Bestseller 60
 snapshot. The paging envelope (`Items`, `TotalItemCount`, `TotalPageCount`,
 `CurrentPageIndex`, `ItemsPerPage`, `VersionCode: 2`) was copied from responses
 observed from `storeapi.kobo.com` in November 2026; that API is undocumented, so
-physical firmware testing remains the acceptance check. Opening a product page,
-buying and adding to a wishlist are not implemented yet.
+physical firmware testing remains the acceptance check.
+
+Other store pages the reader opens from Discover:
+
+| Request | BookFlow answer |
+| --- | --- |
+| `featuredforkoboplus` (Kobo Plus tab) | The same BookFlow rows. |
+| `featured/{id}` for a remembered Kobo Store list, such as "Top 50 Books" | The first Bestseller 60 row, or "Nieuw in BookFlow". |
+| `products/books/{id}` (product page) | The book, when it has an imported file or is in Bestseller 60. |
+| `products/{id}/recommendations` | Other catalog books by the same author. |
+| `products?q=` (store search) | The catalog search used by the website. |
+| `POST library/{id}` (the free "get" button) | Adds the book to the library and the Kobo sync list; the next sync downloads it. A Bestseller 60 book without a file answers 409. |
+| `products/{id}/reviews`, `nextread`, `dailydeal`, `user/recommendations`, `user/wishlist` | Empty answers in the store's shape. |
+
+Categories and per-product prices still answer 404; their shapes need a Kobo
+account to observe.
 
 KEPUB metadata size and downloaded bytes come from the same derived file. The
 original library EPUB and its file ID remain unchanged. Readers which already
