@@ -6,7 +6,9 @@ The field names follow the device protocol also implemented by Calibre-Web
 
 from __future__ import annotations
 
+import html
 import json
+import re
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -60,6 +62,9 @@ def resources(endpoint: str) -> dict[str, Any]:
         "user_loyalty_benefits": "/v1/user/loyalty/benefits",
         "oauth_host": "/oauth",
         "tags": "/v1/library/tags",
+        "featured_lists": "/v1/products/featured",
+        "featured_list": "/v1/products/featured/{FeaturedListId}",
+        "user_wishlist": "/v1/user/wishlist",
         "image_url_template": "/v1/covers/{ImageId}/{Width}/{Height}/image.jpg",
         "image_url_quality_template": "/v1/covers/{ImageId}/{Width}/{Height}/{Quality}/{IsGreyscale}/image.jpg",
     }
@@ -136,6 +141,97 @@ def metadata(book: dict[str, Any], endpoint: str) -> dict[str, Any]:
         "IsPreOrder": False,
         "IsSocialEnabled": False,
         "PhoneticPronunciations": {},
+    }
+
+
+_BLOCK_END = re.compile(r"<\s*(?:br|/p|/div|/li|/h[1-6])\b[^>]*>", re.IGNORECASE)
+_TAG = re.compile(r"<[^>]*>")
+
+
+def _description_html(value: object) -> str:
+    """Re-encode provider text so the reader gets plain paragraphs, never provider markup."""
+    text = html.unescape(_TAG.sub(" ", _BLOCK_END.sub("\n", str(value or ""))))
+    paragraphs = [" ".join(part.split()) for part in text.split("\n")]
+    kept = [part for part in paragraphs if part][:12]
+    return "".join(f"<p>{html.escape(part[:1500])}</p>" for part in kept)
+
+
+def store_book(book: dict[str, Any]) -> dict[str, Any]:
+    """A Discover product in the store's ``Book`` shape; BookFlow books are free."""
+    identifier = book_uuid(int(book["id"]))
+    author = str(book.get("author") or "").strip()
+    details = book.get("metadata_json")
+    if isinstance(details, str):
+        # Raw database rows carry the column as JSON text.
+        try:
+            details = json.loads(details)
+        except ValueError:
+            details = None
+    details = details if isinstance(details, dict) else {}
+    year = book.get("publish_year")
+    publication = f"{int(year):04d}-01-01T00:00:00Z" if year else timestamp(book.get("created_at"))
+    title = str(book.get("title") or "")
+    product: dict[str, Any] = {
+        "Id": identifier,
+        "CrossRevisionId": identifier,
+        "WorkId": identifier,
+        "Title": title,
+        "Contributors": author,
+        "ContributorRoles": [{"Name": author, "Role": "Author"}] if author else [],
+        "Description": _description_html(details.get("description")),
+        "Language": book.get("language") or "en",
+        "ImageId": identifier,
+        "PublisherName": str(details.get("publisher") or ""),
+        "PublicationDate": publication,
+        "ISBN": str(book.get("isbn_13") or ""),
+        "Slug": re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or identifier,
+        "IsFree": True,
+        "Price": {"Currency": "EUR", "Price": 0},
+        "HasPreview": False,
+        "RedirectPreviewUrls": [],
+        "IsPreOrder": False,
+        "IsRecommendation": False,
+        "IsInternetArchive": False,
+        "IsContentSharingEnabled": False,
+        "AgeVerificationRequired": False,
+        "PromoCodeAllowed": False,
+        "EligibleForKoboLoveDiscount": False,
+        "Rating": 0,
+        "TotalRating": 0,
+        "LifeCycleDates": {"ActivationDate": publication},
+    }
+    series = str(book.get("series_name") or "").strip()
+    position = book.get("series_position")
+    if series:
+        product["SeriesName"] = series
+        if isinstance(position, (int, float)):
+            product["SeriesNumber"] = f"{position:g}"
+            product["SeriesNumberFloat"] = position
+    return product
+
+
+def store_product(book: dict[str, Any]) -> dict[str, Any]:
+    """The product page for one book: the list ``Book`` plus the detail-only fields."""
+    return {
+        **store_book(book),
+        "Subtitle": str(book.get("subtitle") or ""),
+        "ApplicableSubscriptions": [],
+        "RatingHistogram": {str(stars): 0 for stars in range(1, 6)},
+    }
+
+
+def store_page(
+    items: list[dict[str, Any]], *, total: int, page_index: int, page_size: int
+) -> dict[str, Any]:
+    """The store's ``VersionCode`` 2 paging envelope used by featured lists and wishlist."""
+    return {
+        "Items": items,
+        "ItemCount": len(items),
+        "TotalPageCount": (total + page_size - 1) // page_size,
+        "TotalItemCount": total,
+        "CurrentPageIndex": page_index,
+        "ItemsPerPage": page_size,
+        "VersionCode": 2,
     }
 
 

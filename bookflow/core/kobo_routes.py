@@ -8,6 +8,7 @@ import json
 import secrets
 import time
 from copy import deepcopy
+from datetime import UTC, datetime
 from ipaddress import ip_address
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -15,7 +16,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from flask import Blueprint, Response, jsonify, request, send_file
 
-from bookflow.core import kobo_positions, kobo_protocol
+from bookflow.core import kobo_discover, kobo_positions, kobo_protocol
 from bookflow.core.kobo_services import (
     KoboAuthenticationError,
     KoboCursorError,
@@ -27,6 +28,7 @@ from bookflow.core.path_security import PathInput, PathSecurityError, resolve_li
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from bookflow.core.kobo_discover import KoboDiscoverService
     from bookflow.core.kobo_services import KoboSyncService, TokenService
 
 KOB0_CONTRACT_FIXTURES: dict[str, dict[str, Any]] = {
@@ -67,6 +69,7 @@ def register_kobo_routes(
     cover_fetcher: CoverFetcher | None = None,
     sync_audit_recorder: SyncAuditRecorder | None = None,
     file_exporter: DeviceFileExporter | None = None,
+    discover_service: KoboDiscoverService | None = None,
 ) -> Blueprint:
     """Create and register Kobo token routes without touching application bootstrap.
 
@@ -475,6 +478,187 @@ def register_kobo_routes(
         # Unknown paths and unauthorized requests must still fail normally.
         return jsonify({})
 
+    def store_paging() -> tuple[int, int]:
+        try:
+            page_index = max(0, int(request.args.get("page_index", "0")))
+            page_size = int(request.args.get("page_size", "25"))
+        except ValueError:
+            return 0, 25
+        return page_index, min(max(1, page_size), kobo_discover.MAX_PAGE_SIZE)
+
+    def books_requested() -> bool:
+        # The reader asks for "book"; an audiobook-only shelf stays empty.
+        types = request.args.get("TypesToInclude")
+        return types is None or "book" in {item.strip().lower() for item in types.split(",")}
+
+    def book_page(books: list[dict[str, Any]], total: int) -> dict[str, Any]:
+        page_index, page_size = store_paging()
+        if not books_requested():
+            books, total = [], 0
+        result = kobo_protocol.store_page(
+            [{"Book": kobo_protocol.store_book(book)} for book in books],
+            total=total,
+            page_index=page_index,
+            page_size=page_size,
+        )
+        result["Filters"] = {"SubscriptionsAvailable": ["False"], "PreOrders": ["False"]}
+        return result
+
+    # The eBooks tab asks for featured lists and the Kobo Plus tab for its own
+    # lists. Both show the same BookFlow rows; everything in BookFlow is free.
+    @blueprint.get("/<token>/v1/products/featured/", strict_slashes=False)
+    @blueprint.get("/<token>/v1/products/featuredforkoboplus/", strict_slashes=False)
+    def featured_lists(token: str) -> tuple[Response, int] | Response:
+        user_id, failure = authenticate(token)
+        if failure is not None:
+            return failure
+        page_index, page_size = store_paging()
+        rows = (
+            discover_service.featured_lists(user_id=cast(int, user_id))
+            if discover_service is not None and books_requested()
+            else []
+        )
+        visible = rows[page_index * page_size : (page_index + 1) * page_size]
+        items = [
+            {"Id": row.identifier, "Name": row.name, "ProductTypes": ["Book"]} for row in visible
+        ]
+        return jsonify(
+            kobo_protocol.store_page(
+                items, total=len(rows), page_index=page_index, page_size=page_size
+            )
+        )
+
+    @blueprint.get("/<token>/v1/products/featured/<list_id>")
+    def featured_list(token: str, list_id: str) -> tuple[Response, int] | Response:
+        user_id, failure = authenticate(token)
+        if failure is not None:
+            return failure
+        if discover_service is None:
+            return jsonify({"code": "not_found"}), 404
+        page_index, page_size = store_paging()
+        try:
+            page = discover_service.page(
+                user_id=cast(int, user_id),
+                list_id=list_id,
+                offset=page_index * page_size,
+                limit=page_size,
+            )
+        except kobo_discover.DiscoverError:
+            return jsonify({"code": "not_found"}), 404
+        return jsonify(book_page(page.books, page.total))
+
+    @blueprint.get("/<token>/v1/products")
+    def store_search(token: str) -> tuple[Response, int] | Response:
+        user_id, failure = authenticate(token)
+        if failure is not None:
+            return failure
+        page_index, page_size = store_paging()
+        page = (
+            discover_service.search(
+                user_id=cast(int, user_id),
+                query=request.args.get("q", ""),
+                offset=page_index * page_size,
+                limit=page_size,
+            )
+            if discover_service is not None
+            else kobo_discover.DiscoverPage(books=[], total=0)
+        )
+        return jsonify({**book_page(page.books, page.total), "SafeSearch": True})
+
+    def discover_book(identifier: str) -> dict[str, Any] | None:
+        try:
+            book_id = kobo_protocol.parse_book_uuid(identifier)
+        except ValueError:
+            return None
+        return discover_service.book(book_id=book_id) if discover_service is not None else None
+
+    @blueprint.get("/<token>/v1/products/books/<book_identifier>/", strict_slashes=False)
+    def store_product(token: str, book_identifier: str) -> tuple[Response, int] | Response:
+        _user_id, failure = authenticate(token)
+        if failure is not None:
+            return failure
+        book = discover_book(book_identifier)
+        if book is None:
+            return jsonify({"code": "not_found"}), 404
+        return jsonify(kobo_protocol.store_product(book))
+
+    @blueprint.get("/<token>/v1/products/<book_identifier>/recommendations")
+    def store_recommendations(token: str, book_identifier: str) -> tuple[Response, int] | Response:
+        user_id, failure = authenticate(token)
+        if failure is not None:
+            return failure
+        book = discover_book(book_identifier)
+        if book is None or discover_service is None:
+            return jsonify(book_page([], 0))
+        _, page_size = store_paging()
+        page = discover_service.more_by_author(
+            user_id=cast(int, user_id), book_id=int(book["id"]), limit=page_size
+        )
+        return jsonify(book_page(page.books, page.total))
+
+    @blueprint.get("/<token>/v1/products/<book_identifier>/reviews")
+    def store_reviews(token: str, book_identifier: str) -> tuple[Response, int] | Response:
+        del book_identifier
+        _user_id, failure = authenticate(token)
+        if failure is not None:
+            return failure
+        return jsonify(
+            {"Items": [], "ReviewSummary": {}, "TotalPageCount": 0, "CurrentPageIndex": 0}
+        )
+
+    @blueprint.get("/<token>/v1/products/<book_identifier>/nextread")
+    def store_next_read(token: str, book_identifier: str) -> tuple[Response, int] | Response:
+        del book_identifier
+        _user_id, failure = authenticate(token)
+        return failure if failure is not None else jsonify(book_page([], 0))
+
+    @blueprint.get("/<token>/v1/products/dailydeal")
+    def store_daily_deal(token: str) -> tuple[Response, int] | Response:
+        # The store answers an empty array when there is no daily deal.
+        _user_id, failure = authenticate(token)
+        return failure if failure is not None else jsonify([])
+
+    @blueprint.get("/<token>/v1/user/wishlist")
+    @blueprint.get("/<token>/v1/user/recommendations")
+    def device_empty_shelf(token: str) -> tuple[Response, int] | Response:
+        _user_id, failure = authenticate(token)
+        if failure is not None:
+            return failure
+        page_index, page_size = store_paging()
+        return jsonify(
+            kobo_protocol.store_page([], total=0, page_index=page_index, page_size=page_size)
+        )
+
+    @blueprint.post("/<token>/v1/library/<book_identifier>")
+    def store_claim(token: str, book_identifier: str) -> tuple[Response, int] | Response:
+        """The product page's free "get" button.
+
+        A book with a file goes to the library and the reader at once. A book
+        without one (most Bestseller 60 titles) becomes a request that adds it
+        to the reader once BookFlow has imported a file.
+        """
+        user_id, failure = authenticate(token)
+        if failure is not None:
+            return failure
+        user_id = cast(int, user_id)
+        book = discover_book(book_identifier)
+        if book is None or discover_service is None:
+            return jsonify({"code": "not_found"}), 404
+        book_id = int(book["id"])
+        try:
+            book_id, file_id = discover_service.claim(user_id=user_id, book_id=book_id)
+            sync_service.enable_user(user_id=user_id)
+            sync_service.set_book(user_id=user_id, book_id=book_id, file_id=file_id, source="kobo")
+        except KoboEntitlementError:
+            return jsonify({"code": "unavailable", "message": "This book has no file yet"}), 409
+        except kobo_discover.DiscoverError:
+            try:
+                sync_service.enable_user(user_id=user_id)
+                discover_service.request(user_id=user_id, book_id=book_id)
+            except kobo_discover.DiscoverError:
+                return jsonify({"code": "unavailable", "message": "This book has no file yet"}), 409
+        return jsonify(kobo_protocol.entitlement(book_id, datetime.now(UTC)))
+
     @blueprint.get("/<token>/v1/library/tags")
     def device_tags(token: str) -> tuple[Response, int] | Response:
         _user_id, failure = authenticate(token)
@@ -583,10 +767,16 @@ def register_kobo_routes(
             return failure
         user_id = cast(int, user_id)
         try:
-            book = sync_service.get_book_metadata(user_id=user_id, book_id=book_id)
+            cover_url = sync_service.get_book_metadata(user_id=user_id, book_id=book_id).get(
+                "cover_url"
+            )
         except KoboEntitlementError:
-            return jsonify({"code": "not_found", "message": "Cover not found"}), 404
-        cover_url = book.get("cover_url")
+            # Discover also shows catalog and Bestseller 60 books that are not on the reader.
+            cover_url = (
+                discover_service.cover_url(book_id=book_id)
+                if discover_service is not None
+                else None
+            )
         if not isinstance(cover_url, str) or not cover_url.strip():
             return jsonify({"code": "not_found", "message": "Cover not found"}), 404
         if cover_fetcher is None:

@@ -90,7 +90,44 @@ shapes does not replace testing on physical firmware.
 | Web resume | Server timestamps are compared with local saved positions; Kobo updates clear obsolete web CFIs or replace them with translated CFIs. |
 | Sentence positions | The pinned kepubify converter exports a separate cached KEPUB. Original EPUB CFIs map to real KoboSpan IDs and back, only when chapter text matches. Unsupported locators/editions retain percentage-only progress. |
 | Collections | BookFlow has no collection model to synchronize; tags remain empty. |
-| Store services | Purchases, subscriptions, wishlist and loyalty functionality are not implemented; optional device requests receive the explicit compatibility shapes. |
+| Store services | Purchases, subscriptions and loyalty functionality are not implemented; optional device requests receive the explicit compatibility shapes. The wishlist answers with an empty page. |
+| Discover | The reader's Discover tab shows BookFlow rows instead of the Kobo Store (see below). |
+
+### Discover tab
+
+Nickel builds Discover from `featured_lists` (the rows) and `featured_list`
+(one row's books). BookFlow answers both from its own data, scoped to the
+token's user, and never contacts Kobo:
+
+| Row | Content |
+| --- | --- |
+| Nog niet op je Kobo | Library books with a readable file that are not on this user's Kobo sync list. |
+| Nieuw in BookFlow | The catalog's most recently imported books, as on the web home page. |
+| Bestseller 60, Fictie, Non-fictie, Spanning, Jeugd, Culinair | The active Bestseller 60 snapshot. |
+
+Empty rows are left out. Books use the store's `{"Book": {...}}` item shape with
+`IsFree: true`, the BookFlow cover template and a description re-encoded as
+plain paragraphs. Covers for books that are not on the reader are served only
+when the book has an imported file or belongs to the active Bestseller 60
+snapshot. The paging envelope (`Items`, `TotalItemCount`, `TotalPageCount`,
+`CurrentPageIndex`, `ItemsPerPage`, `VersionCode: 2`) was copied from responses
+observed from `storeapi.kobo.com` in November 2026; that API is undocumented, so
+physical firmware testing remains the acceptance check.
+
+Other store pages the reader opens from Discover:
+
+| Request | BookFlow answer |
+| --- | --- |
+| `featuredforkoboplus` (Kobo Plus tab) | The same BookFlow rows. |
+| `featured/{id}` for a remembered Kobo Store list, such as "Top 50 Books" | The first Bestseller 60 row, or "Nieuw in BookFlow". |
+| `products/books/{id}` (product page) | The book, when it has an imported file or is in Bestseller 60. |
+| `products/{id}/recommendations` | Other catalog books by the same author. |
+| `products?q=` (store search) | The catalog search used by the website. |
+| `POST library/{id}` (the free "get" button) | A book with an EPUB goes to the library and the Kobo sync list; the next sync downloads it. A book without a file (most Bestseller 60 titles) becomes a request with the default release profile and "add to Kobo when available", following the same approval rules as the website. Without an active release profile it answers 409. |
+| `products/{id}/reviews`, `nextread`, `dailydeal`, `user/recommendations`, `user/wishlist` | Empty answers in the store's shape. |
+
+Categories and per-product prices still answer 404; their shapes need a Kobo
+account to observe.
 
 KEPUB metadata size and downloaded bytes come from the same derived file. The
 original library EPUB and its file ID remain unchanged. Readers which already

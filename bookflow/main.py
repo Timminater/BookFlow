@@ -73,6 +73,7 @@ from bookflow.core.http_security import (
 )
 from bookflow.core.image_cache import get_image_cache
 from bookflow.core.kepub_converter import KepubCatalogService, KepubConverter, KepubifyBinary
+from bookflow.core.kobo_discover import KoboDiscoverService
 from bookflow.core.kobo_pairing import KoboPairingService
 from bookflow.core.kobo_pairing_routes import register_kobo_pairing_routes
 from bookflow.core.kobo_routes import register_kobo_routes
@@ -1167,6 +1168,7 @@ if user_db is not None:
             cover_fetcher=lambda cache_id, url: get_image_cache().fetch_and_cache(cache_id, url),
             sync_audit_recorder=user_db.record_kobo_sync,
             file_exporter=export_kobo_file if kepub_converter is not None else None,
+            discover_service=KoboDiscoverService(_user_db_path),
         )
         register_kobo_settings_routes(
             app,
