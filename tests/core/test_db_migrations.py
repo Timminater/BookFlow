@@ -38,7 +38,9 @@ def test_kobo_reading_states_upgrade_preserves_released_journal(tmp_path, fresh_
         else:
             conn.execute("DROP TABLE kobo_reading_states")
         conn.execute("INSERT INTO users (username, role) VALUES ('existing', 'user')")
-        journal = conn.execute("SELECT * FROM schema_migrations ORDER BY version").fetchall()
+        journal = conn.execute(
+            "SELECT * FROM schema_migrations WHERE version <= 30 ORDER BY version"
+        ).fetchall()
     database.initialize()
     database.initialize()
     with sqlite3.connect(db_path) as conn:

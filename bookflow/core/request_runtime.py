@@ -27,6 +27,8 @@ from bookflow.core.catalog_storage_lease import (
 )
 from bookflow.core.durable_jobs import DurableJobService
 from bookflow.core.file_store import FileStore
+from bookflow.core.kepub_converter import validate_epub_container
+from bookflow.core.path_security import resolve_library_file
 from bookflow.core.release_candidates import ReleaseCandidate, ReleaseProfile
 from bookflow.core.release_profile_service import release_profile_from_snapshot
 from bookflow.core.request_scheduler import RequestScheduler
@@ -444,8 +446,10 @@ class RequestRuntime:
             raise ValueError("completed download did not provide an imported file path")
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT book_id, content_type FROM request_processes WHERE id = ?",
-                (request_process_id,),
+                """SELECT book_id, content_type,
+                          EXISTS (SELECT 1 FROM incorrect_file_reports WHERE request_process_id=?) AS replacement
+                   FROM request_processes WHERE id = ?""",
+                (request_process_id, request_process_id),
             ).fetchone()
             if row is not None:
                 deleting = conn.execute(
@@ -460,6 +464,11 @@ class RequestRuntime:
         book_id = int(row["book_id"])
         try:
             source_path = Path(paths[0])
+            if row["replacement"] and source_path.suffix.lower() == ".epub":
+                source_path = resolve_library_file(
+                    source_path, allowed_roots=(self._files.storage_root,)
+                )
+                validate_epub_container(source_path, "Replacement EPUB")
             record = self._catalog.publish_and_register_imported_file(
                 book_id=book_id,
                 file_store=self._files,

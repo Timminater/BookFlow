@@ -1117,6 +1117,22 @@ CHECK (approval_source IN ('admin', 'user_policy'));
 """
 _MIGRATION_030_CHECKSUM = hashlib.sha256(_MIGRATION_030_DEFINITION.encode()).hexdigest()
 _MIGRATION_031_CHECKSUM = hashlib.sha256(KOBO_READING_STATES_SQL.encode()).hexdigest()
+_MIGRATION_032_DEFINITION = """
+ALTER TABLE request_attempts ADD COLUMN imported_file_id INTEGER
+    REFERENCES book_files(id) ON DELETE SET NULL;
+CREATE INDEX idx_request_attempts_imported_file ON request_attempts(imported_file_id)
+WHERE imported_file_id IS NOT NULL;
+
+CREATE TABLE incorrect_file_reports (
+    file_id INTEGER PRIMARY KEY REFERENCES book_files(id) ON DELETE CASCADE,
+    reported_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    request_process_id INTEGER NOT NULL REFERENCES request_processes(id) ON DELETE CASCADE,
+    release_blocked INTEGER NOT NULL CHECK (release_blocked IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_incorrect_file_reports_process ON incorrect_file_reports(request_process_id);
+"""
+_MIGRATION_032_CHECKSUM = hashlib.sha256(_MIGRATION_032_DEFINITION.encode()).hexdigest()
 
 
 def _require_loaded_user(user: dict[str, Any] | None) -> dict[str, Any]:
@@ -1434,6 +1450,12 @@ class UserDB:
                             checksum=_MIGRATION_031_CHECKSUM,
                             apply=self._apply_migration_031,
                         ),
+                        Migration(
+                            version=32,
+                            name="incorrect-library-file-reports",
+                            checksum=_MIGRATION_032_CHECKSUM,
+                            apply=self._apply_migration_032,
+                        ),
                     ),
                 )
                 migrator.migrate()
@@ -1711,6 +1733,10 @@ class UserDB:
     @staticmethod
     def _apply_migration_031(conn: sqlite3.Connection) -> None:
         _execute_sql_script(conn, KOBO_READING_STATES_SQL)
+
+    @staticmethod
+    def _apply_migration_032(conn: sqlite3.Connection) -> None:
+        _execute_sql_script(conn, _MIGRATION_032_DEFINITION)
 
     @staticmethod
     def _backfill_catalog_phase_one(conn: sqlite3.Connection) -> None:

@@ -382,6 +382,13 @@ const en = {
   'catalogDetail.requestStatus': 'Request status',
   'catalogDetail.requestUpdated': 'Last updated',
   'catalogDetail.availableFiles': 'Available files',
+  'catalogDetail.reportIncorrectFile': 'Report incorrect file',
+  'catalogDetail.replaceIncorrectFileConfirm':
+    'BookFlow will remove this version for everyone who has it and look for another download.',
+  'catalogDetail.replaceIncorrectFile': 'Report and replace',
+  'catalogDetail.replacementQueued': 'The release is blocked and a replacement search is queued.',
+  'catalogDetail.replacementUnknownSource':
+    'A replacement search is queued. BookFlow could not identify the original release to block it.',
   'catalogDetail.fileCount': '{count} files',
   'catalogDetail.noFormats': 'No files available yet',
   'catalogDetail.kobo': 'Kobo',
@@ -1317,6 +1324,14 @@ const nl: Record<TranslationKey, string> = {
   'catalogDetail.requestStatus': 'Aanvraagstatus',
   'catalogDetail.requestUpdated': 'Laatst bijgewerkt',
   'catalogDetail.availableFiles': 'Beschikbare bestanden',
+  'catalogDetail.reportIncorrectFile': 'Verkeerd bestand melden',
+  'catalogDetail.replaceIncorrectFileConfirm':
+    'BookFlow haalt deze versie weg bij iedereen die hem heeft en zoekt een andere download.',
+  'catalogDetail.replaceIncorrectFile': 'Melden en vervangen',
+  'catalogDetail.replacementQueued':
+    'De release is geblokkeerd en de zoektocht naar een vervanger staat in de wachtrij.',
+  'catalogDetail.replacementUnknownSource':
+    'De zoektocht naar een vervanger staat in de wachtrij. BookFlow kon de oorspronkelijke release niet achterhalen om die te blokkeren.',
   'catalogDetail.fileCount': '{count} bestanden',
   'catalogDetail.noFormats': 'Nog geen bestanden beschikbaar',
   'catalogDetail.kobo': 'Kobo',

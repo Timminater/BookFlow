@@ -4,14 +4,28 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from zipfile import ZipFile
 
 import pytest
+from flask import Flask
 
 from bookflow.core.attempt_policy import FailureCode
-from bookflow.core.release_candidates import ReleaseCandidate, ReleaseProfile
-from bookflow.core.request_runtime import RequestRuntime, decode_source_reference
+from bookflow.core.kobo_services import KoboSyncService
+from bookflow.core.release_candidates import (
+    ReleaseCandidate,
+    ReleaseProfile,
+    source_reference_fingerprint,
+)
+from bookflow.core.request_runtime import (
+    RequestRuntime,
+    decode_source_reference,
+    encode_source_reference,
+)
 from bookflow.core.request_workflow_service import RequestWorkflowService
 from bookflow.core.user_db import UserDB
+from bookflow.core.v1_api import V1Actor, register_v1_api
+
+from .test_kobo_positions import write_epub
 
 
 def _seed(database_path: Path) -> tuple[int, list[int]]:
@@ -65,6 +79,121 @@ def _search(
         ),
         sources={"direct_download": lambda: candidates},
     )
+
+
+def test_reporting_wrong_file_replaces_it_for_every_reader(tmp_path: Path) -> None:
+    db_path = tmp_path / "users.db"
+    original_process, users = _seed(db_path)
+    library = tmp_path / "library"
+    queued: list[dict] = []
+    runtime = _runtime(db_path, library, queued)
+
+    def candidate(source_id: str, url: str) -> ReleaseCandidate:
+        return ReleaseCandidate(
+            source="direct_download",
+            title="Dune",
+            format="epub",
+            protocol="direct",
+            download_url=url,
+            metadata={"payload_reference": encode_source_reference("direct_download", source_id)},
+        )
+
+    def complete(source_id: str, path: Path) -> None:
+        runtime.handle_terminal(
+            SimpleNamespace(task_id=source_id, source="direct_download", library_paths=[str(path)]),
+            status="complete",
+        )
+
+    _search(runtime, original_process, [candidate("incorrect", "https://example.test/original")])
+    assert runtime.start_attempt(original_process) is not None
+    incorrect_path = library / "incorrect.epub"
+    incorrect_path.write_bytes(b"invalid EPUB")
+    complete("incorrect", incorrect_path)
+
+    with sqlite3.connect(db_path) as conn:
+        file_id, book_id = conn.execute("SELECT id, book_id FROM book_files").fetchone()
+        other_file_id = conn.execute(
+            """INSERT INTO book_files (book_id, storage_path, file_format, size_bytes, sha256, import_status)
+               VALUES (?, 'other-edition.pdf', 'pdf', 30, ?, 'imported')""",
+            (book_id, "f" * 64),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO user_file_entitlements(user_id,file_id) VALUES (?,?)",
+            (users[1], other_file_id),
+        )
+        # Exercise provenance fallback for libraries imported before the feature.
+        conn.execute("UPDATE request_attempts SET imported_file_id=NULL")
+    kobo = KoboSyncService(str(db_path), cursor_secret="test")
+    kobo.enable_user(user_id=users[1])
+    kobo.set_book(user_id=users[1], book_id=book_id, file_id=file_id)
+
+    def restore_kobo(user_id: int, book_id: int, file_id: int) -> None:
+        kobo.set_book(user_id=user_id, book_id=book_id, file_id=file_id)
+
+    runtime.set_kobo_fulfilment(restore_kobo)
+
+    actor = V1Actor(1, is_admin=True)
+    app = Flask(__name__)
+    register_v1_api(app, database_path=db_path, resolve_actor=lambda: actor)
+    client = app.test_client()
+    url = f"/api/v1/library/books/{book_id}/files/{file_id}/report-incorrect"
+    assert client.post(url).status_code == 404
+    actor = V1Actor(users[0])
+    assert client.post(url.replace(f"/books/{book_id}/", "/books/999/")).status_code == 404
+    response = client.post(url)
+    assert response.status_code == 202
+    assert response.json["release_blocked"] is True
+    replacement = response.json["request_process_id"]
+    assert client.post(url).json == response.json
+    actor = V1Actor(users[1])
+    assert client.post(url).status_code == 404
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT import_status FROM book_files WHERE id=?", (file_id,)
+        ).fetchone() == ("quarantined",)
+        assert conn.execute("SELECT user_id, file_id FROM user_file_entitlements").fetchall() == [
+            (users[1], other_file_id)
+        ]
+        assert conn.execute("SELECT desired_state FROM user_kobo_books").fetchone() == ("deleted",)
+        assert conn.execute(
+            "SELECT fingerprint FROM blocked_releases WHERE reason='incorrect_library_file'"
+        ).fetchone() == (
+            source_reference_fingerprint(encode_source_reference("direct_download", "incorrect")),
+        )
+
+    _search(
+        runtime,
+        replacement,
+        [
+            candidate("incorrect", "https://example.test/changed-url"),
+            candidate("alternative", "https://example.test/alternative"),
+        ],
+    )
+    assert runtime.start_attempt(replacement) is not None
+    assert queued[-1]["source_id"] == "alternative"
+    valid_path = library / "replacement.epub"
+    write_epub(valid_path, "<p>Correct book</p>")
+    with ZipFile(valid_path, "a") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+    complete("alternative", valid_path)
+
+    with sqlite3.connect(db_path) as conn:
+        new_file_id = conn.execute(
+            "SELECT imported_file_id FROM request_attempts WHERE request_process_id=? AND status='completed'",
+            (replacement,),
+        ).fetchone()[0]
+        assert new_file_id != file_id
+        assert conn.execute(
+            "SELECT user_id FROM user_file_entitlements WHERE file_id=? ORDER BY user_id",
+            (new_file_id,),
+        ).fetchall() == [(user_id,) for user_id in users]
+        assert conn.execute(
+            "SELECT user_id, desired_state, file_id FROM user_kobo_books"
+        ).fetchone() == (
+            users[1],
+            "active",
+            new_file_id,
+        )
 
 
 def test_terminal_completion_imports_once_and_fulfils_all_recipients(tmp_path: Path) -> None:

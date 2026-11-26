@@ -340,6 +340,10 @@ class CatalogService:
                         raise CatalogServiceError(
                             "This file is already attached to a different Book"
                         )
+                    if existing["import_status"] == "quarantined":
+                        raise CatalogServiceError(
+                            "This file was quarantined and cannot be reimported"
+                        )
                     conn.commit()
                     return dict(existing)
                 if derived_from_file_id is not None:

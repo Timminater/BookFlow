@@ -98,11 +98,24 @@ class AttemptService:
                       release_candidates.accepted = 1
                       AND NOT EXISTS (
                           SELECT 1 FROM blocked_releases
-                          WHERE blocked_releases.fingerprint = release_candidates.fingerprint
+                          WHERE blocked_releases.fingerprint IN (
+                                release_candidates.fingerprint,
+                                json_extract(release_candidates.normalized_json, '$.source_reference_fingerprint')
+                            )
                             AND blocked_releases.unblocked_at IS NULL
                             AND (
                                 blocked_releases.scope = 'global'
                                 OR blocked_releases.request_process_id = release_candidates.request_process_id
+                                OR (
+                                    blocked_releases.reason = 'incorrect_library_file'
+                                    AND EXISTS (
+                                        SELECT 1 FROM request_processes original
+                                        JOIN request_processes current
+                                          ON current.book_id=original.book_id
+                                         AND current.id=release_candidates.request_process_id
+                                        WHERE original.id=blocked_releases.request_process_id
+                                    )
+                                )
                             )
                       )
                   )
@@ -508,10 +521,10 @@ class AttemptService:
             conn.execute(
                 """
                 UPDATE request_attempts
-                SET status = 'completed', updated_at = ?, completed_at = ?
+                SET status = 'completed', imported_file_id = ?, updated_at = ?, completed_at = ?
                 WHERE id = ?
                 """,
-                (now, now, request_attempt_id),
+                (file_id, now, now, request_attempt_id),
             )
             conn.commit()
         except Exception:

@@ -118,6 +118,7 @@ export const CatalogBookPage = ({
   const [reportField, setReportField] = useState('title');
   const [reportNote, setReportNote] = useState('');
   const [fileAction, setFileAction] = useState<string | null>(null);
+  const [incorrectFileId, setIncorrectFileId] = useState<number | null>(null);
   const [updatingKobo, setUpdatingKobo] = useState(false);
 
   const load = useCallback(async () => {
@@ -125,6 +126,7 @@ export const CatalogBookPage = ({
     setDetail(null);
     setLibraryBook(null);
     setMessage(null);
+    setIncorrectFileId(null);
     const reference = resolveCatalogBookReference(rawBookId, rawIsbn);
     if (!reference) {
       setMessage(t('common.loadFailed'));
@@ -231,6 +233,26 @@ export const CatalogBookPage = ({
       .catch((caught: unknown) => {
         if (caught instanceof DOMException && caught.name === 'AbortError') return;
         setMessage(caught instanceof Error ? caught.message : t('common.loadFailed'));
+      })
+      .finally(() => setFileAction(null));
+  };
+  const reportIncorrectFile = (fileId: number) => {
+    setFileAction('report');
+    setMessage(null);
+    void v1Api
+      .reportIncorrectFile(book.id, fileId)
+      .then(async (result) => {
+        await load();
+        setMessage(
+          t(
+            result.release_blocked
+              ? 'catalogDetail.replacementQueued'
+              : 'catalogDetail.replacementUnknownSource',
+          ),
+        );
+      })
+      .catch((caught: unknown) => {
+        setMessage(caught instanceof Error ? caught.message : t('catalogDetail.reportFailed'));
       })
       .finally(() => setFileAction(null));
   };
@@ -851,7 +873,40 @@ export const CatalogBookPage = ({
                           ? t('catalogDetail.downloading')
                           : t('bookDetail.download')}
                       </button>
+                      {detail.in_library && incorrectFileId !== file.id && (
+                        <button
+                          type="button"
+                          disabled={fileAction !== null}
+                          className="rounded-md border border-(--border-muted) px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50"
+                          onClick={() => setIncorrectFileId(file.id)}
+                        >
+                          {t('catalogDetail.reportIncorrectFile')}
+                        </button>
+                      )}
                     </div>
+                    {detail.in_library && incorrectFileId === file.id && (
+                      <div className="mt-3 space-y-2">
+                        <p className="text-sm">{t('catalogDetail.replaceIncorrectFileConfirm')}</p>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            disabled={fileAction !== null}
+                            className="rounded-md bg-rose-700 px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                            onClick={() => reportIncorrectFile(file.id)}
+                          >
+                            {t('catalogDetail.replaceIncorrectFile')}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={fileAction !== null}
+                            className="rounded-md border border-(--border-muted) px-2.5 py-1.5 text-xs font-semibold"
+                            onClick={() => setIncorrectFileId(null)}
+                          >
+                            {t('common.cancel')}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}

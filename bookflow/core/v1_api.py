@@ -38,6 +38,7 @@ from bookflow.core.catalog_monitor_service import CatalogMonitorError, CatalogMo
 from bookflow.core.catalog_service import CatalogService, CatalogServiceError
 from bookflow.core.durable_jobs import DurableJobService
 from bookflow.core.file_store import FileStore, FileStoreError
+from bookflow.core.incorrect_file_service import replace_incorrect_file
 from bookflow.core.kepub_converter import KepubConversionError, validate_epub_container
 from bookflow.core.library_service import LibraryService
 from bookflow.core.path_security import PathSecurityError
@@ -1649,6 +1650,18 @@ def register_v1_api(
     @require_actor()
     def library_files(book_id: int) -> Response | tuple[Response, int]:
         return library_book_detail(book_id)
+
+    @blueprint.post("/library/books/<int:book_id>/files/<int:file_id>/report-incorrect")
+    @require_actor()
+    def report_incorrect_library_file(book_id: int, file_id: int) -> tuple[Response, int]:
+        actor: V1Actor = g.v1_actor
+        try:
+            result = replace_incorrect_file(
+                db_path, user_id=actor.user_id, book_id=book_id, file_id=file_id
+            )
+        except RequestWorkflowError as exc:
+            return error(exc.code, str(exc), exc.status_code)
+        return jsonify(result), 202
 
     @blueprint.route(
         "/library/books/<int:book_id>/files/<int:file_id>/content", methods=["GET", "HEAD"]

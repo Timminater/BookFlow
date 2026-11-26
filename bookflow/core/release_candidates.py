@@ -62,6 +62,13 @@ class ReleaseCandidate:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+def source_reference_fingerprint(reference: str | None) -> str | None:
+    """Identify a source-native release without exposing the opaque source ID."""
+    if reference is None:
+        return None
+    return f"source-reference:{hashlib.sha256(reference.encode()).hexdigest()}"
+
+
 def candidate_fingerprint(candidate: ReleaseCandidate) -> str:
     """Build a namespaced stable fingerprint without persisting URL credentials."""
     source = normalize_release_text(candidate.source) or "unknown"
