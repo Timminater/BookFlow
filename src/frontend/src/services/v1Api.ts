@@ -451,6 +451,11 @@ export const v1Api = {
     return requestV1(`/library/books?${query.toString()}`);
   },
   book: (bookId: number): Promise<V1BookDetail> => requestV1(`/library/books/${bookId}`),
+  reportIncorrectFile: (
+    bookId: number,
+    fileId: number,
+  ): Promise<{ request_process_id: number; release_blocked: boolean }> =>
+    requestV1(`/library/books/${bookId}/files/${fileId}/report-incorrect`, { method: 'POST' }),
   createRequest: (
     body: {
       book_id: number;

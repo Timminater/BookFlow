@@ -15,7 +15,9 @@ from bookflow.core.release_candidates import (
     CandidateEvaluation,
     ReleaseCandidate,
     ReleaseProfile,
+    candidate_fingerprint,
     evaluate_candidate,
+    source_reference_fingerprint,
 )
 
 if TYPE_CHECKING:
@@ -113,6 +115,9 @@ class SearchService:
                 "seeders": candidate.seeders,
                 "size_bytes": candidate.size_bytes,
                 "source": candidate.source,
+                "source_reference_fingerprint": source_reference_fingerprint(
+                    SearchService._safe_payload_reference(candidate)
+                ),
                 "title": candidate.title,
             },
             sort_keys=True,
@@ -174,10 +179,18 @@ class SearchService:
                 for row in conn.execute(
                     """
                     SELECT fingerprint FROM blocked_releases
-                    WHERE unblocked_at IS NULL
-                      AND (scope = 'global' OR request_process_id = ?)
+                    WHERE unblocked_at IS NULL AND (
+                        scope = 'global' OR request_process_id = ?
+                        OR (
+                            reason = 'incorrect_library_file' AND EXISTS (
+                                SELECT 1 FROM request_processes original
+                                JOIN request_processes current ON current.id=? AND current.book_id=original.book_id
+                                WHERE original.id=blocked_releases.request_process_id
+                            )
+                        )
+                    )
                     """,
-                    (request_process_id,),
+                    (request_process_id, request_process_id),
                 ).fetchall()
             )
             conn.commit()
@@ -208,10 +221,13 @@ class SearchService:
 
         evaluated_by_fingerprint: dict[str, tuple[ReleaseCandidate, CandidateEvaluation]] = {}
         for candidate in candidates:
+            candidate_blocks = blocked
+            if source_reference_fingerprint(self._safe_payload_reference(candidate)) in blocked:
+                candidate_blocks = blocked | {candidate_fingerprint(candidate)}
             evaluation = evaluate_candidate(
                 candidate,
                 profile,
-                blocked_fingerprints=blocked,
+                blocked_fingerprints=candidate_blocks,
             )
             existing = evaluated_by_fingerprint.get(evaluation.fingerprint)
             if existing is None or (
