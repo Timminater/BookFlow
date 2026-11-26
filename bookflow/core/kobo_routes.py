@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 from flask import Blueprint, Response, jsonify, request, send_file
 
 from bookflow.core import kobo_discover, kobo_positions, kobo_protocol
+from bookflow.core.kepub_converter import KepubConversionError
 from bookflow.core.kobo_services import (
     KoboAuthenticationError,
     KoboCursorError,
@@ -298,10 +299,27 @@ def register_kobo_routes(
                 continue
             if str(book["file_format"]).lower() not in {"epub", "kepub"}:
                 continue
-            state = device_state(
-                user_id, book_id, sync_service.get_reading_state(user_id=user_id, book_id=book_id)
+            progress_only = change["type"] == "progress" and (
+                book["first_revision"] <= batch.since_revision
             )
-            if change["type"] == "progress" and book["first_revision"] <= batch.since_revision:
+            try:
+                exported_book = book if progress_only else device_book(user_id, book)
+                state = device_state(
+                    user_id,
+                    book_id,
+                    sync_service.get_reading_state(user_id=user_id, book_id=book_id),
+                )
+            except (KepubConversionError, PathSecurityError) as exc:
+                # Advance the cursor with the batch. Selecting a replacement file
+                # creates a new journal entry and makes the book eligible again.
+                app.logger.warning(
+                    "Skipping Kobo sync entry for book %s, file %s: %s",
+                    book_id,
+                    book["file_id"],
+                    type(exc).__name__,
+                )
+                continue
+            if progress_only:
                 payload.append({"ChangedReadingState": {"ReadingState": state}})
             else:
                 kind = (
@@ -316,7 +334,7 @@ def register_kobo_routes(
                                 book_id, book["updated_at"]
                             ),
                             "BookMetadata": kobo_protocol.metadata(
-                                device_book(user_id, book), device_endpoint(token)
+                                exported_book, device_endpoint(token)
                             ),
                             "ReadingState": state,
                         }
@@ -348,9 +366,12 @@ def register_kobo_routes(
             book = sync_service.get_book_metadata(user_id=cast(int, user_id), book_id=book_id)
         except ValueError, KoboEntitlementError:
             return jsonify({"code": "not_found"}), 404
-        metadata = kobo_protocol.metadata(
-            device_book(cast(int, user_id), book), device_endpoint(token)
-        )
+        try:
+            metadata = kobo_protocol.metadata(
+                device_book(cast(int, user_id), book), device_endpoint(token)
+            )
+        except KepubConversionError, PathSecurityError:
+            return jsonify({"code": "file_unavailable", "message": "File is unavailable"}), 404
         if "/v1/user/library/books/" in request.path:
             return jsonify(metadata)
         return jsonify([metadata])
@@ -756,7 +777,7 @@ def register_kobo_routes(
             _, _, path = device_file(user_id, file_id)
         except KoboEntitlementError:
             return jsonify({"code": "not_found", "message": "File not found"}), 404
-        except PathSecurityError:
+        except KepubConversionError, PathSecurityError:
             return jsonify({"code": "file_unavailable", "message": "File is unavailable"}), 404
         return send_file(path, as_attachment=True, download_name=Path(path).name)
 

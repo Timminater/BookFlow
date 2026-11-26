@@ -8,11 +8,14 @@ recorded separately in docs/kobo.md.
 import base64
 import json
 import sqlite3
+from pathlib import Path
 from urllib.parse import urlsplit
+from zipfile import ZipFile
 
 import pytest
 from flask import Flask
 
+from bookflow.core.kepub_converter import validate_epub_container
 from bookflow.core.kobo_pairing import KoboPairingService
 from bookflow.core.kobo_pairing_routes import register_kobo_pairing_routes
 from bookflow.core.kobo_protocol import book_uuid
@@ -268,6 +271,87 @@ def test_idle_sync_keeps_cursor_and_new_change_is_delivered(kobo_fixture):
     )
     assert removed.json[0]["ChangedEntitlement"]["BookEntitlement"]["IsRemoved"] is True
     assert client.get(base + f"/v1/files/{kobo_fixture['file_id']}/download").status_code == 404
+
+
+def test_reader_sync_skips_invalid_epub_and_delivers_replacement(kobo_fixture, caplog):
+    fixture = kobo_fixture
+    user_id, invalid_book_id, invalid_file_id = (
+        fixture["user"]["id"],
+        fixture["book_id"],
+        fixture["file_id"],
+    )
+
+    def export(_user_id, row):
+        validate_epub_container(Path(row["storage_path"]), "Source EPUB")
+        return row
+
+    client, base = _reader(fixture, file_exporter=export)
+    good_path = fixture["storage_root"] / "valid.epub"
+    repaired_path = fixture["storage_root"] / "replacement.epub"
+    write_epub(good_path, "<p>Another book</p>")
+    write_epub(repaired_path, "<p>A valid edition</p>")
+    for path in (good_path, repaired_path):
+        with ZipFile(path, "a") as archive:
+            archive.writestr("mimetype", "application/epub+zip")
+    with sqlite3.connect(fixture["db_path"]) as conn:
+        good_book_id = conn.execute(
+            """
+            INSERT INTO books (metadata_provider, provider_book_id, title)
+            VALUES ('test', 'valid-book', 'Valid Kobo Book')
+            """
+        ).lastrowid
+        files = []
+        for book_id, path, checksum in (
+            (good_book_id, good_path, "b" * 64),
+            (invalid_book_id, repaired_path, "c" * 64),
+        ):
+            file_id = conn.execute(
+                """
+                INSERT INTO book_files
+                    (book_id, storage_path, file_format, size_bytes, sha256, import_status)
+                VALUES (?, ?, 'epub', ?, ?, 'imported')
+                """,
+                (book_id, str(path), path.stat().st_size, checksum),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO user_file_entitlements (user_id, file_id) VALUES (?, ?)",
+                (user_id, file_id),
+            )
+            files.append(file_id)
+    good_file_id, repaired_file_id = files
+    sync = fixture["sync"]
+    sync.set_book(user_id=user_id, book_id=good_book_id, file_id=good_file_id)
+
+    url = base + "/v1/library/sync"
+    first = client.get(url)
+    assert first.status_code == 200
+    assert len(first.json) == 1
+    metadata = first.json[0]["NewEntitlement"]["BookMetadata"]
+    assert metadata["RevisionId"] == book_uuid(good_book_id)
+    assert (
+        client.get(urlsplit(metadata["DownloadUrls"][0]["Url"]).path).data == good_path.read_bytes()
+    )
+    assert (
+        f"Skipping Kobo sync entry for book {invalid_book_id}, file {invalid_file_id}"
+        in caplog.text
+    )
+    assert base not in caplog.text
+    assert client.get(base + f"/v1/files/{invalid_file_id}/download").status_code == 404
+
+    headers = {"X-Kobo-Synctoken": first.headers["X-Kobo-Synctoken"]}
+    idle = client.get(url, headers=headers)
+    assert idle.json == []
+    assert idle.headers["X-Kobo-Synctoken"] == headers["X-Kobo-Synctoken"]
+    sync.set_book(user_id=user_id, book_id=invalid_book_id, file_id=repaired_file_id)
+    delta = client.get(url, headers=headers)
+    assert delta.status_code == 200
+    assert len(delta.json) == 1
+    metadata = delta.json[0]["ChangedEntitlement"]["BookMetadata"]
+    assert metadata["RevisionId"] == book_uuid(invalid_book_id)
+    assert (
+        client.get(urlsplit(metadata["DownloadUrls"][0]["Url"]).path).data
+        == repaired_path.read_bytes()
+    )
 
 
 def test_reader_bookmark_roundtrip_and_stale_state_does_not_reset(kobo_fixture):
